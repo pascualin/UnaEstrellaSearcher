@@ -53,6 +53,7 @@ def run_collection(storage: Storage, settings) -> int:
             reviewer_name=raw.reviewer_name,
             reviewer_profile_url=raw.reviewer_profile_url,
             text=raw.text,
+            summary=humor.summary,
             owner_reply=raw.owner_reply,
             review_url=raw.review_url,
             humor_score=humor.score,

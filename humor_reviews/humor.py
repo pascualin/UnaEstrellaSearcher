@@ -16,6 +16,7 @@ class HumorResult:
     score: int
     notes: str
     tags: list[str]
+    summary: str
 
 
 def score_review(
@@ -38,18 +39,18 @@ def score_review(
     )
 
     try:
-        response = client.chat.completions.create(
-            model=settings.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Devuelve SOLO JSON con: "
-                        "score (entero 0-100), notes (string), tags (array de strings)."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
+            response = client.chat.completions.create(
+                model=settings.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Devuelve SOLO JSON con: "
+                            "score (entero 0-100), notes (string), tags (array de strings), summary (string corto)."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
             response_format={
                 "type": "json_schema",
                 "json_schema": {
@@ -60,8 +61,9 @@ def score_review(
                             "score": {"type": "integer", "minimum": 0, "maximum": 100},
                             "notes": {"type": "string"},
                             "tags": {"type": "array", "items": {"type": "string"}},
+                            "summary": {"type": "string"},
                         },
-                        "required": ["score", "notes", "tags"],
+                        "required": ["score", "notes", "tags", "summary"],
                         "additionalProperties": False,
                     },
                     "strict": True,
@@ -76,6 +78,7 @@ def score_review(
             score=_clamp_score(payload.get("score", 0)),
             notes=str(payload.get("notes", "LLM score")).strip() or "LLM score",
             tags=_normalize_tags(payload.get("tags")),
+            summary=str(payload.get("summary", "")).strip(),
         )
     except Exception as exc:  # pragma: no cover - network/runtime issues
         message = _redact_secrets(str(exc), [api_key])
@@ -83,6 +86,7 @@ def score_review(
             score=0,
             notes=f"LLM error: {exc.__class__.__name__} - {message}" if message else f"LLM error: {exc.__class__.__name__}",
             tags=["llm_error"],
+            summary="",
         )
 
 

@@ -29,6 +29,7 @@ class Review:
     reviewer_name: str
     reviewer_profile_url: str
     text: str
+    summary: str
     owner_reply: str
     review_url: str
     humor_score: int
@@ -117,6 +118,8 @@ class Storage:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()}
         if "reviewer_profile_url" not in columns:
             conn.execute("ALTER TABLE reviews ADD COLUMN reviewer_profile_url TEXT")
+        if "summary" not in columns:
+            conn.execute("ALTER TABLE reviews ADD COLUMN summary TEXT")
 
     def upsert_place(self, place: Place) -> None:
         with sqlite3.connect(self.db_path) as conn:
@@ -156,17 +159,18 @@ class Storage:
             conn.execute(
                 """
                 INSERT INTO reviews (
-                    review_id, place_id, rating, date, reviewer_name, reviewer_profile_url, text, owner_reply,
+                    review_id, place_id, rating, date, reviewer_name, reviewer_profile_url, text, summary, owner_reply,
                     review_url, humor_score, humor_notes, safety_label, safety_notes, tags,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(review_id) DO UPDATE SET
                     rating=excluded.rating,
                     date=excluded.date,
                     reviewer_name=excluded.reviewer_name,
                     reviewer_profile_url=excluded.reviewer_profile_url,
                     text=excluded.text,
+                    summary=excluded.summary,
                     owner_reply=excluded.owner_reply,
                     review_url=excluded.review_url,
                     humor_score=excluded.humor_score,
@@ -184,6 +188,7 @@ class Storage:
                     review.reviewer_name,
                     review.reviewer_profile_url,
                     review.text,
+                    review.summary,
                     review.owner_reply,
                     review.review_url,
                     review.humor_score,
@@ -263,6 +268,7 @@ class Storage:
                 reviewer_name=row["reviewer_name"],
                 reviewer_profile_url=row["reviewer_profile_url"] or "",
                 text=row["text"],
+                summary=row["summary"] or "",
                 owner_reply=row["owner_reply"],
                 review_url=row["review_url"],
                 humor_score=row["humor_score"],
@@ -325,6 +331,7 @@ class Storage:
                     reviewer_name=row["reviewer_name"],
                     reviewer_profile_url=row["reviewer_profile_url"] or "",
                     text=row["text"],
+                    summary=row["summary"] or "",
                     owner_reply=row["owner_reply"],
                     review_url=row["review_url"],
                     humor_score=row["humor_score"],

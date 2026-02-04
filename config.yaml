@@ -53,7 +53,7 @@ scoring:
     \t•\tEnfado plano sin creatividad.\n\t•\tHumor involuntario muy débil.\n\nOutput\n\
     \nDevuelve solo este JSON:\n{{\n  \"score\": <entero 0-100>,\n  \"notes\": \"\
     <explicación muy breve del porqué>\",\n  \"tags\": [\"insultos\", \"anecdota\"\
-    , \"respuesta_propietario\", \"exageracion\", \"...\"]\n}}\n\nSi no hay nada gracioso,\
+    , \"respuesta_propietario\", \"exageracion\", \"...\"],\n  \"summary\": \"<resumen corto de 1-2 frases que conserve el humor>\"\n}}\n\nSi no hay nada gracioso,\
     \ asigna una puntuación baja (0–20).\n\n⸻\n\nInput\n\nESTRELLAS:\n{rating}\n\n\
     RESEÑA:\n{review_text}\n\nRESPUESTA DEL PROPIETARIO:\n{owner_reply}\n"
 safety:

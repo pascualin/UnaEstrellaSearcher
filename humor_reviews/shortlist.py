@@ -19,14 +19,15 @@ def _review_to_markdown(review: Review, reason: str, tags: list[str]) -> str:
         "not_recommended": "Not recommended",
     }
     safety_label = safety_map.get(review.safety_label, review.safety_label)
+    display_text, label = _display_text(review)
     lines = [
         f"### {review.humor_score}/100 - {', '.join(tags)}",
         f"**Reviewer:** {review.reviewer_name or 'Anonymous'}",
         f"**Date:** {review.date}",
         f"**Rating:** {review.rating} star(s)",
         "",
-        "**Review:**",
-        review.text or "(no text)",
+        f"**{label}:**",
+        display_text or "(no text)",
     ]
 
     if review.owner_reply:
@@ -202,8 +203,12 @@ def export_shortlist_html(
             )
             safe_notes = html_lib.escape(review.humor_notes or "")
             safe_safety = html_lib.escape(review.safety_notes or "")
-            safe_review_text = html_lib.escape(review.text or "(no text)")
             owner_reply_display = _format_owner_reply(review.owner_reply)
+            review_text_html = _render_review_text_html(review)
+            rationale_items = _score_rationale(review)
+            rationale_html = "\n".join(
+                [f"<li>{html_lib.escape(item)}</li>" for item in rationale_items]
+            )
 
             rows.append(
                 "\n".join(
@@ -219,13 +224,14 @@ def export_shortlist_html(
                         f"    <span><strong>Safety:</strong> {review.safety_label} ({safe_safety})</span>",
                         f"    <span><strong>Why selected:</strong> {safe_notes}</span>",
                         "  </div>",
+                        "  <section class=\"review-text\">",
+                        "    <div class=\"label\">Justificación</div>",
+                        f"    <ul class=\"rationale\">{rationale_html}</ul>",
+                        "  </section>",
                         "  <div class=\"tags\">",
                         "    " + " ".join([f'<span class="tag">{t}</span>' for t in tags.split(", ")]),
                         "  </div>",
-                        "  <section class=\"review-text\">",
-                        "    <div class=\"label\">Review</div>",
-                        f"    <div class=\"block\">{safe_review_text}</div>",
-                        "  </section>",
+                        review_text_html,
                         (
                             "  <section class=\"review-text\">"
                             "    <div class=\"label\">Owner reply</div>"
@@ -356,6 +362,9 @@ def export_shortlist_html(
             "    .review-text { margin-top: 18px; }",
             "    .label { font-weight: 700; margin-bottom: 8px; font-family: \"Fraunces\", serif; }",
             "    .block { white-space: pre-wrap; background: #eff5ff; padding: 14px; border: 1px solid var(--border); border-radius: 10px; }",
+            "    .review-details { margin-top: 10px; }",
+            "    .review-details summary { cursor: pointer; font-weight: 700; color: var(--accent); }",
+            "    .review-details[open] summary { margin-bottom: 10px; }",
             "    .links { margin-top: 14px; }",
             "    .links a { color: var(--accent); text-decoration: none; font-weight: 700; }",
             "    .links .cta {",
@@ -423,6 +432,56 @@ def _format_owner_reply(raw: str | None) -> str:
             if text:
                 return html_lib.escape(text)
     return html_lib.escape(raw)
+
+
+def _score_rationale(review: Review) -> list[str]:
+    notes = (review.humor_notes or "").strip() or "Sin nota adicional del scoring."
+    tags = ", ".join([t.strip() for t in (review.tags or "").split(",") if t.strip()]) or "misc"
+    context = f"{review.rating} estrellas"
+    if review.owner_reply:
+        context += " · con respuesta del propietario"
+    return [
+        f"Nota: {notes}",
+        f"Señales: {tags}",
+        f"Contexto: {context}",
+    ]
+
+
+def _display_text(review: Review, threshold: int = 420) -> tuple[str, str]:
+    text = review.text or ""
+    summary = (review.summary or "").strip()
+    if len(text) >= threshold and summary:
+        return summary, "Resumen"
+    return text, "Review"
+
+
+def _render_review_text_html(review: Review, threshold: int = 420) -> str:
+    text = (review.text or "").strip()
+    summary = (review.summary or "").strip()
+    if len(text) >= threshold and summary:
+        safe_summary = html_lib.escape(summary)
+        safe_full = html_lib.escape(text)
+        return "\n".join(
+            [
+                "  <section class=\"review-text\">",
+                "    <div class=\"label\">Resumen</div>",
+                f"    <div class=\"block\">{safe_summary}</div>",
+                "    <details class=\"review-details\">",
+                "      <summary>Ver texto completo</summary>",
+                f"      <div class=\"block\">{safe_full}</div>",
+                "    </details>",
+                "  </section>",
+            ]
+        )
+    safe_text = html_lib.escape(text or "(no text)")
+    return "\n".join(
+        [
+            "  <section class=\"review-text\">",
+            "    <div class=\"label\">Review</div>",
+            f"    <div class=\"block\">{safe_text}</div>",
+            "  </section>",
+        ]
+    )
 
 
 def mark_shortlist(storage: Storage, reviews: list[Review]) -> None:

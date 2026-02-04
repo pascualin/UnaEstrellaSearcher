@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Config Studio · Base de datos</title>
+  <link rel="stylesheet" href="/config_ui.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <div class="brand">Config Studio</div>
+      <nav>
+        <a class="nav-item" href="/config">Configuración</a>
+        <a class="nav-item active" href="/db">Base de datos</a>
+      </nav>
+      <div class="actions side-actions">
+        <button class="secondary" id="db-refresh">Actualizar</button>
+      </div>
+    </aside>
+    <div class="content">
+      <header>
+        <h1>Base de datos</h1>
+        <p>Vista rápida de las reseñas almacenadas.</p>
+      </header>
+      <main>
+        <section id="db-view" class="view active">
+          <div class="card db-grid">
+            <div class="row" style="align-items: center;">
+              <div>
+                <h2>Resumen</h2>
+                <p class="hint">Resumen de ingestión y contenido.</p>
+              </div>
+              <div class="db-controls" style="margin-left: auto;">
+                <label class="hint" for="review-sort">Ordenar por</label>
+                <select id="review-sort">
+                  <option value="humor_score">Humor score</option>
+                  <option value="updated_at">Última actualización</option>
+                </select>
+              </div>
+            </div>
+            <div class="db-summary" id="db-summary"></div>
+            <div class="db-section">
+              <h3>Reseñas</h3>
+              <div class="table-wrap" id="db-reviews"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const reviewSort = byId("review-sort");
+
+    function renderReviews(container, rows) {
+      if (!rows || rows.length === 0) {
+        container.innerHTML = "<div class='hint' style='padding: 12px;'>Sin datos.</div>";
+        return;
+      }
+      const headers = ["Humor score", "Nombre", "Localidad", "Fecha"];
+      const thead = "<thead><tr>" + headers.map((h) => `<th>${h}</th>`).join("") + "</tr></thead>";
+      const tbody = "<tbody>" + rows.map((row) => {
+        const name = row.place_name || "Sitio";
+        const url = row.review_url || "";
+        const site = url ? `<a href=\"${url}\" target=\"_blank\" rel=\"noopener noreferrer\">${name}</a>` : name;
+        return `<tr class=\"review-row\" data-review-id=\"${row.review_id || ""}\">` + [
+          `<td>${row.humor_score ?? ""}</td>`,
+          `<td>${site}</td>`,
+          `<td>${row.place_locality || ""}</td>`,
+          `<td>${row.date || ""}</td>`,
+        ].join("") + "</tr>";
+      }).join("") + "</tbody>";
+      container.innerHTML = `<table>${thead}${tbody}</table>`;
+    }
+
+    async function loadDb() {
+      const res = await fetch(`/api/db-data?sort=${encodeURIComponent(reviewSort.value)}`);
+      if (!res.ok) {
+        byId("db-summary").innerHTML = "<div class='hint'>No se pudo cargar la base de datos.</div>";
+        return;
+      }
+      const payload = await res.json();
+      const summary = payload.summary || {};
+      byId("db-summary").innerHTML = [
+        `<div class=\"db-summary-card\"><div class=\"label\">Reseñas</div><div class=\"value\">${summary.reviews || 0}</div></div>`,
+        `<div class=\"db-summary-card\"><div class=\"label\">Reseñas vacías (última)</div><div class=\"value\">${summary.empty_reviews_skipped_last || 0}</div></div>`,
+        `<div class=\"db-summary-card\"><div class=\"label\">Reseñas vacías (total)</div><div class=\"value\">${summary.empty_reviews_skipped_total || 0}</div></div>`,
+      ].join("");
+      renderReviews(byId("db-reviews"), payload.reviews || []);
+      document.querySelectorAll(".review-row").forEach((row) => {
+        row.addEventListener("click", (event) => {
+          if (event.target.closest("a")) return;
+          const reviewId = row.dataset.reviewId;
+          if (reviewId) {
+            window.location.href = `/review?id=${encodeURIComponent(reviewId)}`;
+          }
+        });
+      });
+    }
+
+    byId("db-refresh").addEventListener("click", loadDb);
+    reviewSort.addEventListener("change", loadDb);
+    loadDb();
+  </script>
+</body>
+</html>

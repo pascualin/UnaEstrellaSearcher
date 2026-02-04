@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import ast
+import html as html_lib
 import json
 import sqlite3
+from datetime import datetime
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, List
@@ -15,13 +19,15 @@ HOST = "127.0.0.1"
 PORT = 5173
 
 
-HTML_PATH = ROOT / "scripts" / "config_ui.html"
+CONFIG_HTML_PATH = ROOT / "scripts" / "config_view.html"
+DB_HTML_PATH = ROOT / "scripts" / "db_view.html"
+REVIEW_HTML_PATH = ROOT / "scripts" / "review_detail.html"
 
 
-def _load_html() -> str:
-    if HTML_PATH.exists():
-        return HTML_PATH.read_text(encoding="utf-8")
-    return "<h1>Missing config_ui.html</h1>"
+def _load_html(path: Path, fallback: str) -> str:
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return f"<h1>{fallback}</h1>"
 
 
 def _load_config() -> Dict[str, Any]:
@@ -96,7 +102,7 @@ def _fetch_db_snapshot(sort_by: str) -> Dict[str, Any]:
 
     reviews = _rows(
         "SELECT "
-        "r.rating, r.date, r.humor_score, r.safety_label, r.status, r.updated_at, r.review_url, "
+        "r.review_id, r.rating, r.date, r.humor_score, r.safety_label, r.status, r.updated_at, r.review_url, "
         "p.name as place_name, p.address as place_locality "
         "FROM reviews r "
         "LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id) "
@@ -112,6 +118,128 @@ def _fetch_db_snapshot(sort_by: str) -> Dict[str, Any]:
     }
 
 
+def _render_review_detail(review_id: str) -> str | None:
+    db_path = _db_path()
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                """
+                SELECT
+                    r.review_id, r.place_id, r.rating, r.date, r.reviewer_name, r.reviewer_profile_url,
+                    r.text, r.summary, r.owner_reply, r.review_url, r.humor_score, r.humor_notes,
+                    r.safety_label, r.safety_notes, r.tags, r.status, r.updated_at,
+                    p.name as place_name, p.address as place_address, p.category as place_category
+                FROM reviews r
+                LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id)
+                WHERE r.review_id = ?
+                """,
+                (review_id,),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such column: r.summary" not in str(exc):
+                raise
+            conn.execute("ALTER TABLE reviews ADD COLUMN summary TEXT")
+            row = conn.execute(
+                """
+                SELECT
+                    r.review_id, r.place_id, r.rating, r.date, r.reviewer_name, r.reviewer_profile_url,
+                    r.text, r.summary, r.owner_reply, r.review_url, r.humor_score, r.humor_notes,
+                    r.safety_label, r.safety_notes, r.tags, r.status, r.updated_at,
+                    p.name as place_name, p.address as place_address, p.category as place_category
+                FROM reviews r
+                LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id)
+                WHERE r.review_id = ?
+                """,
+                (review_id,),
+            ).fetchone()
+        if not row:
+            return None
+
+    def _esc(value: Any) -> str:
+        return html_lib.escape(str(value or ""))
+
+    place_name = _esc(row["place_name"] or "Sitio")
+    place_address = _esc(row["place_address"] or "")
+    review_url = _esc(row["review_url"] or "")
+    reviewer_raw = str(row["reviewer_name"] or "Anonymous").strip()
+    reviewer_url_raw = str(row["reviewer_profile_url"] or "").strip()
+    if reviewer_raw.startswith("{"):
+        parsed = _parse_reviewer_payload(reviewer_raw)
+        if parsed:
+            reviewer_raw, reviewer_url_raw = parsed
+    reviewer = _esc(reviewer_raw)
+    reviewer_url = _esc(reviewer_url_raw)
+    summary = _esc(row["summary"] or "")
+    review_text = _esc(row["text"] or "")
+    owner_reply = _esc(row["owner_reply"] or "")
+    tags = _esc(row["tags"] or "")
+    place_line = f"{place_name} {'· ' + place_address if place_address else ''}".strip()
+    reviewer_html = f'<a href="{reviewer_url}">{reviewer}</a>' if reviewer_url else reviewer
+    maps_link = (
+        f'<a class="cta" href="{review_url}" target="_blank" rel="noopener noreferrer">'
+        "Abrir en Google Maps</a>"
+        if review_url
+        else ""
+    )
+    summary_html = (
+        f'<div class="review-text"><div class="label">Resumen</div><div class="block">{summary}</div></div>'
+        if summary
+        else ""
+    )
+    owner_reply_html = (
+        f'<div class="review-text"><div class="label">Respuesta del propietario</div><div class="block">{owner_reply}</div></div>'
+        if owner_reply
+        else ""
+    )
+
+    template = _load_html(REVIEW_HTML_PATH, "Missing review_detail.html")
+    updated_at = _format_datetime(str(row["updated_at"] or ""))
+    return (
+        template.replace("{{place_line}}", place_line)
+        .replace("{{summary_html}}", summary_html)
+        .replace("{{review_text}}", review_text or "(sin texto)")
+        .replace("{{owner_reply_html}}", owner_reply_html)
+        .replace("{{humor_score}}", _esc(row["humor_score"]))
+        .replace("{{safety_label}}", _esc(row["safety_label"]))
+        .replace("{{safety_notes}}", _esc(row["safety_notes"]))
+        .replace("{{tags}}", tags or "misc")
+        .replace("{{humor_notes}}", _esc(row["humor_notes"]) or "Sin nota adicional.")
+        .replace("{{date}}", _esc(row["date"]))
+        .replace("{{rating}}", _esc(row["rating"]))
+        .replace("{{status}}", _esc(row["status"]))
+        .replace("{{reviewer_html}}", reviewer_html)
+        .replace("{{updated_at}}", _esc(updated_at))
+        .replace("{{maps_link}}", maps_link)
+    )
+
+
+def _parse_reviewer_payload(raw: str) -> tuple[str, str] | None:
+    try:
+        payload = ast.literal_eval(raw)
+    except Exception:
+        return None
+    if isinstance(payload, dict):
+        name = str(payload.get("name") or payload.get("username") or "").strip()
+        link = str(payload.get("link") or payload.get("profile_url") or "").strip()
+        if name or link:
+            return name or "Anonymous", link
+    return None
+
+
+def _format_datetime(raw: str) -> str:
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return dt.strftime("%d-%m-%Y %H:%M")
+    except ValueError:
+        return raw
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, body: bytes, content_type: str, headers: dict[str, str] | None = None) -> None:
         self.send_response(code)
@@ -124,8 +252,20 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        if self.path == "/":
-            html = _load_html()
+        if self.path == "/config_ui.css":
+            css_path = ROOT / "scripts" / "config_ui.css"
+            if css_path.exists():
+                self._send(
+                    200,
+                    css_path.read_bytes(),
+                    "text/css; charset=utf-8",
+                    headers={"Cache-Control": "no-store"},
+                )
+                return
+            self._send(404, b"Not found", "text/plain")
+            return
+        if self.path == "/" or self.path in {"/config", "/config/"}:
+            html = _load_html(CONFIG_HTML_PATH, "Missing config_view.html")
             self._send(
                 200,
                 html.encode("utf-8"),
@@ -133,20 +273,36 @@ class Handler(BaseHTTPRequestHandler):
                 headers={"Cache-Control": "no-store"},
             )
             return
-        if self.path == "/config_ui.css":
-            if HTML_PATH.exists():
-                css_path = HTML_PATH.with_suffix(".css")
-                if css_path.exists():
-                    self._send(
-                        200,
-                        css_path.read_bytes(),
-                        "text/css; charset=utf-8",
-                        headers={"Cache-Control": "no-store"},
-                    )
-                    return
-            self._send(404, b"Not found", "text/plain")
+        if self.path in {"/db", "/db/"}:
+            html = _load_html(DB_HTML_PATH, "Missing db_view.html")
+            self._send(
+                200,
+                html.encode("utf-8"),
+                "text/html; charset=utf-8",
+                headers={"Cache-Control": "no-store"},
+            )
             return
-        if self.path == "/config":
+        if self.path.startswith("/review"):
+            review_id = ""
+            if "?" in self.path:
+                query = urlsplit(self.path).query
+                parsed = parse_qs(query)
+                review_id = (parsed.get("id") or [""])[0]
+            if not review_id:
+                self._send(400, b"Missing review id", "text/plain")
+                return
+            html = _render_review_detail(review_id)
+            if html is None:
+                self._send(404, b"Review not found", "text/plain")
+                return
+            self._send(
+                200,
+                html.encode("utf-8"),
+                "text/html; charset=utf-8",
+                headers={"Cache-Control": "no-store"},
+            )
+            return
+        if self.path == "/api/config":
             cfg = _load_config()
             self._send(200, json.dumps(cfg).encode("utf-8"), "application/json")
             return
@@ -159,7 +315,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(404, b"No HTML output found", "text/plain")
             return
-        if self.path.startswith("/db-data"):
+        if self.path.startswith("/api/db-data"):
             query = self.path.split("?", 1)[1] if "?" in self.path else ""
             sort_by = "updated_at"
             for part in query.split("&"):
@@ -182,13 +338,13 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"Not found", "text/plain")
 
     def do_POST(self) -> None:
-        if self.path == "/config":
+        if self.path == "/api/config":
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             _write_config(payload)
             self._send(200, b"ok", "text/plain")
             return
-        if self.path == "/run-weekly":
+        if self.path == "/api/run-weekly":
             import subprocess
 
             result = subprocess.run(
@@ -201,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
             body = output.encode("utf-8")
             self._send(200, body, "text/plain; charset=utf-8")
             return
-        if self.path == "/run-dry-run":
+        if self.path == "/api/run-dry-run":
             import subprocess
 
             result = subprocess.run(

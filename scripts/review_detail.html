@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Detalle de reseña</title>
+  <link rel="stylesheet" href="/config_ui.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <div class="brand">Config Studio</div>
+      <nav>
+        <a class="nav-item" href="/db">Volver a Base de datos</a>
+        <a class="nav-item" href="/config">Configuración</a>
+      </nav>
+    </aside>
+    <div class="content">
+      <header>
+        <h1>Detalle de reseña</h1>
+        <p>{{place_line}}</p>
+      </header>
+      <main>
+        <div class="detail-layout">
+          <div class="card detail-primary">
+            <h2>Reseña</h2>
+            {{summary_html}}
+            <div class="review-text">
+              <div class="label">Texto completo</div>
+              <div class="block">{{review_text}}</div>
+            </div>
+            {{owner_reply_html}}
+          </div>
+          <div class="detail-side">
+            <div class="card">
+              <h2>Resumen</h2>
+              <p class="hint">Puntuación y señales principales</p>
+              <div class="meta meta-stack">
+                <span><strong>Humor:</strong> {{humor_score}}</span>
+                <span><strong>Safety:</strong> {{safety_label}} ({{safety_notes}})</span>
+                <span><strong>Tags:</strong> {{tags}}</span>
+              </div>
+              <div class="review-text">
+                <div class="label">Nota</div>
+                <div class="block">{{humor_notes}}</div>
+              </div>
+            </div>
+            <div class="card">
+              <h2>Datos</h2>
+              <div class="meta meta-stack">
+                <span><strong>Fecha:</strong> {{date}}</span>
+                <span><strong>Rating:</strong> {{rating}} estrellas</span>
+                <span><strong>Status:</strong> {{status}}</span>
+                <span><strong>Reviewer:</strong> {{reviewer_html}}</span>
+                <span><strong>Actualizado:</strong> {{updated_at}}</span>
+              </div>
+              <div class="links">
+                {{maps_link}}
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Config Studio · Configuración</title>
+  <link rel="stylesheet" href="/config_ui.css" />
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <div class="brand">Config Studio</div>
+      <nav>
+        <a class="nav-item active" href="/config">Configuración</a>
+        <a class="nav-item" href="/db">Base de datos</a>
+      </nav>
+      <div class="actions side-actions">
+        <button id="save">Guardar cambios</button>
+        <button class="secondary" id="reload">Recargar</button>
+        <button class="secondary" id="run-weekly">Run Weekly</button>
+        <button class="secondary" id="run-dry">Run Dry-Run</button>
+        <button class="secondary" id="open-latest">Abrir último HTML</button>
+        <div class="banner" id="status"></div>
+      </div>
+    </aside>
+    <div class="content">
+      <header>
+        <h1>Configuración</h1>
+        <p>Edita la configuración del proyecto y guarda cambios en <code>config.yaml</code>.</p>
+      </header>
+      <main>
+        <section id="config-view" class="view active">
+          <div class="grid">
+            <div class="card">
+              <h2>App</h2>
+              <div class="row">
+                <div>
+                  <label>Weekly target</label>
+                  <input id="weekly_target_count" type="number" min="1" />
+                </div>
+                <div>
+                  <label>Humor threshold</label>
+                  <input id="humor_threshold" type="number" min="0" max="100" />
+                </div>
+              </div>
+              <div class="row">
+                <div>
+                  <label>Max reviews/place</label>
+                  <input id="max_reviews_per_place" type="number" min="1" />
+                </div>
+                <div>
+                  <label>Max places/run</label>
+                  <input id="max_places_per_run" type="number" min="1" />
+                </div>
+              </div>
+              <label>Locale</label>
+              <input id="locale" type="text" />
+              <div class="toggle">
+                <input id="allow_repeat_suggestions" type="checkbox" />
+                <label for="allow_repeat_suggestions">Allow repeat suggestions</label>
+              </div>
+              <div class="toggle">
+                <input id="enable_screenshots" type="checkbox" />
+                <label for="enable_screenshots">Enable screenshots</label>
+              </div>
+            </div>
+
+            <div class="card">
+              <h2>Discovery</h2>
+              <label>Country</label>
+              <input id="country" type="text" />
+              <label>Regions (una por línea)</label>
+              <textarea id="regions"></textarea>
+              <label>Categories (una por línea)</label>
+              <textarea id="categories"></textarea>
+              <div class="row">
+                <div>
+                  <label>Min total reviews</label>
+                  <input id="min_total_reviews" type="number" min="0" />
+                </div>
+                <div>
+                  <label>Require recent days</label>
+                  <input id="require_recent_days" type="number" min="1" />
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <h2>Scoring (OpenAI)</h2>
+              <label>Model</label>
+              <input id="scoring_model" type="text" />
+              <div class="row">
+                <div>
+                  <label>Temperature</label>
+                  <input id="temperature" type="number" step="0.1" min="0" max="2" />
+                </div>
+                <div>
+                  <label>Max output tokens</label>
+                  <input id="max_output_tokens" type="number" min="1" />
+                </div>
+              </div>
+              <label>Prompt</label>
+              <textarea id="prompt"></textarea>
+            </div>
+
+            <div class="card">
+              <h2>Screenshots</h2>
+              <div class="row">
+                <div>
+                  <label>Timeout (ms)</label>
+                  <input id="screenshot_timeout_ms" type="number" min="1000" step="1000" />
+                </div>
+                <div>
+                  <label>Max per run</label>
+                  <input id="screenshot_max_per_run" type="number" min="1" />
+                </div>
+              </div>
+              <label>Mode</label>
+              <select id="screenshot_mode">
+                <option value="rendered">rendered</option>
+                <option value="live">live</option>
+              </select>
+              <div class="toggle">
+                <input id="screenshot_debug" type="checkbox" />
+                <label for="screenshot_debug">Screenshot debug</label>
+              </div>
+            </div>
+
+            <div class="card">
+              <h2>Curation</h2>
+              <label>Theme limits (formato: tag=valor por línea)</label>
+              <textarea id="theme_limits"></textarea>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const status = byId("status");
+
+    function listToText(list) {
+      return (list || []).join("\n");
+    }
+
+    function textToList(text) {
+      return text.split("\n").map(s => s.trim()).filter(Boolean);
+    }
+
+    function themeLimitsToText(obj) {
+      const lines = [];
+      for (const [k, v] of Object.entries(obj || {})) {
+        lines.push(`${k}=${v}`);
+      }
+      return lines.join("\n");
+    }
+
+    function textToThemeLimits(text) {
+      const out = {};
+      text.split("\n").forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.includes("=")) return;
+        const [k, v] = trimmed.split("=", 2);
+        out[k.trim()] = Number(v.trim());
+      });
+      return out;
+    }
+
+    async function loadConfig() {
+      const res = await fetch("/api/config");
+      const cfg = await res.json();
+      byId("weekly_target_count").value = cfg.app.weekly_target_count || 0;
+      byId("humor_threshold").value = cfg.app.humor_threshold || 0;
+      byId("max_reviews_per_place").value = cfg.app.max_reviews_per_place || 0;
+      byId("max_places_per_run").value = cfg.app.max_places_per_run || 0;
+      byId("locale").value = cfg.app.locale || "en";
+      byId("allow_repeat_suggestions").checked = !!cfg.app.allow_repeat_suggestions;
+      byId("enable_screenshots").checked = !!cfg.app.enable_screenshots;
+
+      byId("country").value = cfg.discovery.country || "";
+      byId("regions").value = listToText(cfg.discovery.regions);
+      byId("categories").value = listToText(cfg.discovery.categories);
+      byId("min_total_reviews").value = cfg.discovery.min_total_reviews || 0;
+      byId("require_recent_days").value = cfg.discovery.require_recent_days || 0;
+
+      byId("scoring_model").value = cfg.scoring.model || "";
+      byId("temperature").value = cfg.scoring.temperature || 0;
+      byId("max_output_tokens").value = cfg.scoring.max_output_tokens || 0;
+      byId("prompt").value = cfg.scoring.prompt || "";
+
+      byId("screenshot_timeout_ms").value = cfg.app.screenshot_timeout_ms || 0;
+      byId("screenshot_max_per_run").value = cfg.app.screenshot_max_per_run || 0;
+      byId("screenshot_mode").value = cfg.app.screenshot_mode || "rendered";
+      byId("screenshot_debug").checked = !!cfg.app.screenshot_debug;
+
+      byId("theme_limits").value = themeLimitsToText(cfg.curation.theme_limits);
+      status.textContent = "";
+    }
+
+    async function saveConfig() {
+      const payload = {
+        app: {
+          output_dir: "out",
+          data_dir: "data",
+          weekly_target_count: Number(byId("weekly_target_count").value),
+          humor_threshold: Number(byId("humor_threshold").value),
+          max_reviews_per_place: Number(byId("max_reviews_per_place").value),
+          max_places_per_run: Number(byId("max_places_per_run").value),
+          allow_repeat_suggestions: byId("allow_repeat_suggestions").checked,
+          locale: byId("locale").value.trim(),
+          enable_screenshots: byId("enable_screenshots").checked,
+          screenshot_dir: "out/screenshots",
+          screenshot_timeout_ms: Number(byId("screenshot_timeout_ms").value),
+          screenshot_max_per_run: Number(byId("screenshot_max_per_run").value),
+          screenshot_mode: byId("screenshot_mode").value,
+          screenshot_debug: byId("screenshot_debug").checked,
+        },
+        discovery: {
+          provider: "serpapi_maps",
+          country: byId("country").value.trim(),
+          regions: textToList(byId("regions").value),
+          categories: textToList(byId("categories").value),
+          min_total_reviews: Number(byId("min_total_reviews").value),
+          require_recent_days: Number(byId("require_recent_days").value),
+        },
+        providers: {
+          serpapi: {
+            api_key_env: "SERPAPI_API_KEY",
+            hl: "es",
+            gl: "es",
+          }
+        },
+        scoring: {
+          provider: "openai",
+          model: byId("scoring_model").value.trim(),
+          api_key_env: "OPENAI_API_KEY",
+          temperature: Number(byId("temperature").value),
+          max_output_tokens: Number(byId("max_output_tokens").value),
+          prompt: byId("prompt").value,
+        },
+        safety: {
+          pii_patterns: [],
+          sensitive_keywords: [],
+          accusation_keywords: [],
+        },
+        curation: {
+          theme_limits: textToThemeLimits(byId("theme_limits").value),
+        }
+      };
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        status.textContent = "Guardado correctamente.";
+      } else {
+        status.textContent = "Error al guardar.";
+      }
+    }
+
+    async function runWeekly() {
+      status.textContent = "Ejecutando pipeline...";
+      const res = await fetch("/api/run-weekly", { method: "POST" });
+      const text = await res.text();
+      status.textContent = text;
+    }
+
+    async function runDryRun() {
+      status.textContent = "Ejecutando dry-run...";
+      const res = await fetch("/api/run-dry-run", { method: "POST" });
+      const text = await res.text();
+      status.textContent = text;
+    }
+
+    function openLatest() {
+      window.open("/latest-html", "_blank");
+    }
+
+    byId("save").addEventListener("click", saveConfig);
+    byId("reload").addEventListener("click", loadConfig);
+    byId("run-weekly").addEventListener("click", runWeekly);
+    byId("run-dry").addEventListener("click", runDryRun);
+    byId("open-latest").addEventListener("click", openLatest);
+
+    loadConfig();
+  </script>
+</body>
+</html>
