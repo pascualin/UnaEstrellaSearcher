@@ -1,0 +1,5 @@
+.env
+*.db
+out/
+.DS_Store
+data/

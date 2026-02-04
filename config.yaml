@@ -1,0 +1,121 @@
+app:
+  output_dir: out
+  data_dir: data
+  weekly_target_count: 15
+  humor_threshold: 60
+  max_reviews_per_place: 30
+  max_places_per_run: 5
+  allow_repeat_suggestions: true
+  locale: es
+  enable_screenshots: false
+  screenshot_dir: out/screenshots
+  screenshot_timeout_ms: 15000
+  screenshot_max_per_run: 10
+  screenshot_mode: rendered
+  screenshot_debug: true
+discovery:
+  provider: serpapi_maps
+  country: ES
+  regions:
+  - Zaragoza
+  categories:
+  - restaurant
+  - hotel
+  - tourist_attraction
+  - parking
+  - car_wash
+  - spa
+  min_total_reviews: 150
+  require_recent_days: 180
+providers:
+  serpapi:
+    api_key_env: SERPAPI_API_KEY
+    hl: es
+    gl: es
+scoring:
+  provider: openai
+  model: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY
+  temperature: 0.2
+  max_output_tokens: 20
+  prompt: 'Evalua UNA resena individual y devuelve SOLO una puntuacion de humor.
+
+    Devuelve un entero de 0 a 100 donde 0 es nada gracioso y 100 es muy gracioso.
+
+    Prioriza resenas de una estrella si son graciosas.
+
+    Nuestro humor es gamberro: insultos, situaciones dantescas y anecdotas graciosas.
+
+    Si hay respuesta del propietario graciosa y no es copia y pega, sube la puntuacion.
+
+    Devuelve JSON con score (0-100), notes (explicacion corta) y tags (lista).
+
+    Si no hay nada gracioso, pon una puntuacion baja.
+
+    No incluyas explicaciones ni texto extra.
+
+
+    ESTRELLAS:
+
+    {rating}
+
+
+    RESENA:
+
+    {review_text}
+
+
+    RESPUESTA DEL PROPIETARIO:
+
+    {owner_reply}
+
+    '
+safety:
+  pii_patterns:
+  - \b\d{3}[- .]?\d{2}[- .]?\d{4}\b
+  - \b\d{10}\b
+  sensitive_keywords:
+  - agresión
+  - asalto
+  - violación
+  - violencia sexual
+  - niño
+  - niña
+  - menor
+  - menores
+  - médico
+  - hospital
+  - suicidio
+  - asesinato
+  - abuso
+  - acosador
+  - assault
+  - rape
+  - child
+  - minor
+  - medical
+  - hospital
+  - suicide
+  - murder
+  - abuse
+  - stalker
+  accusation_keywords:
+  - robó
+  - robo
+  - robaron
+  - me robaron
+  - fraude
+  - estafa
+  - estafaron
+  - me estafaron
+  - stole
+  - theft
+  - fraud
+  - scam
+curation:
+  theme_limits:
+    owner_meltdown: 10
+    absurd_complaint: 12
+    tourist_drama: 8
+    service_rage: 12
+    misc: 12
