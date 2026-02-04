@@ -138,6 +138,15 @@ HTML = """<!doctype html>
       gap: 12px;
       flex-wrap: wrap;
     }
+    .side-actions {
+      margin-top: 22px;
+      display: grid;
+      gap: 10px;
+    }
+    .side-actions button {
+      width: 100%;
+      justify-content: center;
+    }
     button {
       border: 0;
       padding: 10px 16px;
@@ -214,6 +223,14 @@ HTML = """<!doctype html>
         <button class="nav-item active" data-view="config-view">Configuración</button>
         <button class="nav-item" data-view="db-view">Base de datos</button>
       </nav>
+      <div class="actions side-actions">
+        <button id="save">Guardar cambios</button>
+        <button class="secondary" id="reload">Recargar</button>
+        <button class="secondary" id="run-weekly">Run Weekly</button>
+        <button class="secondary" id="run-dry">Run Dry-Run</button>
+        <button class="secondary" id="open-latest">Abrir último HTML</button>
+        <div class="banner" id="status"></div>
+      </div>
     </aside>
     <div class="content">
       <header>
@@ -225,10 +242,6 @@ HTML = """<!doctype html>
           <div class="grid">
       <div class="card">
         <h2>App</h2>
-        <label>Output dir</label>
-        <input id="output_dir" type="text" />
-        <label>Data dir</label>
-        <input id="data_dir" type="text" />
         <div class="row">
           <div>
             <label>Weekly target</label>
@@ -282,27 +295,9 @@ HTML = """<!doctype html>
       </div>
 
       <div class="card">
-        <h2>SerpApi</h2>
-        <label>API key env</label>
-        <input id="serpapi_api_key_env" type="text" />
-        <div class="row">
-          <div>
-            <label>HL</label>
-            <input id="serpapi_hl" type="text" />
-          </div>
-          <div>
-            <label>GL</label>
-            <input id="serpapi_gl" type="text" />
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
         <h2>Scoring (OpenAI)</h2>
         <label>Model</label>
         <input id="scoring_model" type="text" />
-        <label>API key env</label>
-        <input id="scoring_api_key_env" type="text" />
         <div class="row">
           <div>
             <label>Temperature</label>
@@ -319,8 +314,6 @@ HTML = """<!doctype html>
 
       <div class="card">
         <h2>Screenshots</h2>
-        <label>Screenshot dir</label>
-        <input id="screenshot_dir" type="text" />
         <div class="row">
           <div>
             <label>Timeout (ms)</label>
@@ -343,30 +336,12 @@ HTML = """<!doctype html>
       </div>
 
       <div class="card">
-        <h2>Safety</h2>
-        <label>PII patterns (una por línea)</label>
-        <textarea id="pii_patterns"></textarea>
-        <label>Sensitive keywords (una por línea)</label>
-        <textarea id="sensitive_keywords"></textarea>
-        <label>Accusation keywords (una por línea)</label>
-        <textarea id="accusation_keywords"></textarea>
-      </div>
-
-      <div class="card">
         <h2>Curation</h2>
         <label>Theme limits (formato: tag=valor por línea)</label>
         <textarea id="theme_limits"></textarea>
       </div>
           </div>
 
-          <div class="actions">
-            <button id="save">Guardar cambios</button>
-            <button class="secondary" id="reload">Recargar</button>
-            <button class="secondary" id="run-weekly">Run Weekly</button>
-            <button class="secondary" id="run-dry">Run Dry-Run</button>
-            <button class="secondary" id="open-latest">Abrir último HTML</button>
-            <div class="banner" id="status"></div>
-          </div>
         </section>
 
         <section id="db-view" class="view">
@@ -434,8 +409,6 @@ HTML = """<!doctype html>
     async function loadConfig() {
       const res = await fetch("/config");
       const cfg = await res.json();
-      byId("output_dir").value = cfg.app.output_dir || "out";
-      byId("data_dir").value = cfg.app.data_dir || "data";
       byId("weekly_target_count").value = cfg.app.weekly_target_count || 0;
       byId("humor_threshold").value = cfg.app.humor_threshold || 0;
       byId("max_reviews_per_place").value = cfg.app.max_reviews_per_place || 0;
@@ -450,25 +423,15 @@ HTML = """<!doctype html>
       byId("min_total_reviews").value = cfg.discovery.min_total_reviews || 0;
       byId("require_recent_days").value = cfg.discovery.require_recent_days || 0;
 
-      byId("serpapi_api_key_env").value = cfg.providers.serpapi.api_key_env || "";
-      byId("serpapi_hl").value = cfg.providers.serpapi.hl || "";
-      byId("serpapi_gl").value = cfg.providers.serpapi.gl || "";
-
       byId("scoring_model").value = cfg.scoring.model || "";
-      byId("scoring_api_key_env").value = cfg.scoring.api_key_env || "";
       byId("temperature").value = cfg.scoring.temperature || 0;
       byId("max_output_tokens").value = cfg.scoring.max_output_tokens || 0;
       byId("prompt").value = cfg.scoring.prompt || "";
 
-      byId("screenshot_dir").value = cfg.app.screenshot_dir || "";
       byId("screenshot_timeout_ms").value = cfg.app.screenshot_timeout_ms || 0;
       byId("screenshot_max_per_run").value = cfg.app.screenshot_max_per_run || 0;
       byId("screenshot_mode").value = cfg.app.screenshot_mode || "rendered";
       byId("screenshot_debug").checked = !!cfg.app.screenshot_debug;
-
-      byId("pii_patterns").value = listToText(cfg.safety.pii_patterns);
-      byId("sensitive_keywords").value = listToText(cfg.safety.sensitive_keywords);
-      byId("accusation_keywords").value = listToText(cfg.safety.accusation_keywords);
 
       byId("theme_limits").value = themeLimitsToText(cfg.curation.theme_limits);
       status.textContent = "";
@@ -477,8 +440,8 @@ HTML = """<!doctype html>
     async function saveConfig() {
       const payload = {
         app: {
-          output_dir: byId("output_dir").value.trim(),
-          data_dir: byId("data_dir").value.trim(),
+          output_dir: "out",
+          data_dir: "data",
           weekly_target_count: Number(byId("weekly_target_count").value),
           humor_threshold: Number(byId("humor_threshold").value),
           max_reviews_per_place: Number(byId("max_reviews_per_place").value),
@@ -486,7 +449,7 @@ HTML = """<!doctype html>
           allow_repeat_suggestions: byId("allow_repeat_suggestions").checked,
           locale: byId("locale").value.trim(),
           enable_screenshots: byId("enable_screenshots").checked,
-          screenshot_dir: byId("screenshot_dir").value.trim(),
+          screenshot_dir: "out/screenshots",
           screenshot_timeout_ms: Number(byId("screenshot_timeout_ms").value),
           screenshot_max_per_run: Number(byId("screenshot_max_per_run").value),
           screenshot_mode: byId("screenshot_mode").value,
@@ -502,23 +465,23 @@ HTML = """<!doctype html>
         },
         providers: {
           serpapi: {
-            api_key_env: byId("serpapi_api_key_env").value.trim(),
-            hl: byId("serpapi_hl").value.trim(),
-            gl: byId("serpapi_gl").value.trim(),
+            api_key_env: "SERPAPI_API_KEY",
+            hl: "es",
+            gl: "es",
           }
         },
         scoring: {
           provider: "openai",
           model: byId("scoring_model").value.trim(),
-          api_key_env: byId("scoring_api_key_env").value.trim(),
+          api_key_env: "OPENAI_API_KEY",
           temperature: Number(byId("temperature").value),
           max_output_tokens: Number(byId("max_output_tokens").value),
           prompt: byId("prompt").value,
         },
         safety: {
-          pii_patterns: textToList(byId("pii_patterns").value),
-          sensitive_keywords: textToList(byId("sensitive_keywords").value),
-          accusation_keywords: textToList(byId("accusation_keywords").value),
+          pii_patterns: [],
+          sensitive_keywords: [],
+          accusation_keywords: [],
         },
         curation: {
           theme_limits: textToThemeLimits(byId("theme_limits").value),
