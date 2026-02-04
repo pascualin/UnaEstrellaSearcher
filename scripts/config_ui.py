@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, List
@@ -39,6 +40,49 @@ HTML = """<!doctype html>
       background: radial-gradient(circle at top, #f4f8ff 0%, var(--bg) 60%, #e6effa 100%);
       color: var(--ink);
       min-height: 100vh;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      min-height: 100vh;
+    }
+    aside {
+      background: #0b1f36;
+      color: #eaf2ff;
+      padding: 22px 18px;
+      border-right: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .brand {
+      font-family: "Spectral", serif;
+      font-size: 20px;
+      letter-spacing: 0.3px;
+      margin-bottom: 20px;
+    }
+    nav {
+      display: grid;
+      gap: 10px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.06);
+      color: #eaf2ff;
+      text-decoration: none;
+      font-weight: 600;
+      border: 1px solid transparent;
+      cursor: pointer;
+    }
+    .nav-item.active {
+      background: #1b6aa9;
+      border-color: rgba(255, 255, 255, 0.2);
+      box-shadow: 0 8px 18px rgba(27, 106, 169, 0.35);
+    }
+    .content {
+      display: flex;
+      flex-direction: column;
     }
     header {
       padding: 28px 24px 22px;
@@ -111,15 +155,74 @@ HTML = """<!doctype html>
     }
     .hint { color: var(--muted); font-size: 13px; }
     .banner { margin-top: 12px; font-weight: 600; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #fdfefe;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 13px;
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #eef5ff;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+    .db-grid {
+      display: grid;
+      gap: 18px;
+    }
+    .db-summary {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    }
+    .db-summary-card {
+      background: #f4f8ff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }
+    .db-summary-card .label { color: var(--muted); font-size: 12px; }
+    .db-summary-card .value { font-size: 20px; font-weight: 700; }
+    .db-section h3 { margin: 0 0 10px; font-family: "Spectral", serif; }
+    .db-controls {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Config Studio</h1>
-    <p>Edita la configuración del proyecto y guarda cambios en <code>config.yaml</code>.</p>
-  </header>
-  <main>
-    <div class="grid">
+  <div class="layout">
+    <aside>
+      <div class="brand">Config Studio</div>
+      <nav>
+        <button class="nav-item active" data-view="config-view">Configuración</button>
+        <button class="nav-item" data-view="db-view">Base de datos</button>
+      </nav>
+    </aside>
+    <div class="content">
+      <header>
+        <h1>Config Studio</h1>
+        <p>Edita la configuración del proyecto y guarda cambios en <code>config.yaml</code>.</p>
+      </header>
+      <main>
+        <section id="config-view" class="view active">
+          <div class="grid">
       <div class="card">
         <h2>App</h2>
         <label>Output dir</label>
@@ -254,20 +357,52 @@ HTML = """<!doctype html>
         <label>Theme limits (formato: tag=valor por línea)</label>
         <textarea id="theme_limits"></textarea>
       </div>
-    </div>
+          </div>
 
-    <div class="actions">
-      <button id="save">Guardar cambios</button>
-      <button class="secondary" id="reload">Recargar</button>
-      <button class="secondary" id="run-weekly">Run Weekly</button>
-      <button class="secondary" id="run-dry">Run Dry-Run</button>
-      <button class="secondary" id="open-latest">Abrir último HTML</button>
-      <div class="banner" id="status"></div>
+          <div class="actions">
+            <button id="save">Guardar cambios</button>
+            <button class="secondary" id="reload">Recargar</button>
+            <button class="secondary" id="run-weekly">Run Weekly</button>
+            <button class="secondary" id="run-dry">Run Dry-Run</button>
+            <button class="secondary" id="open-latest">Abrir último HTML</button>
+            <div class="banner" id="status"></div>
+          </div>
+        </section>
+
+        <section id="db-view" class="view">
+          <div class="card db-grid">
+            <div class="row" style="align-items: center;">
+              <div>
+                <h2>Base de datos</h2>
+                <p class="hint">Vista rápida de las tablas en <code>data/humor_reviews.db</code>.</p>
+              </div>
+              <div class="actions" style="margin-top: 0;">
+                <button class="secondary" id="db-refresh">Actualizar</button>
+              </div>
+            </div>
+            <div class="db-summary" id="db-summary"></div>
+            <div class="db-section">
+              <div class="db-controls">
+                <h3 style="margin-right: auto;">Reseñas</h3>
+                <label class="hint" for="review-sort">Ordenar por</label>
+                <select id="review-sort">
+                  <option value="humor_score">Humor score</option>
+                  <option value="updated_at">Última actualización</option>
+                </select>
+              </div>
+              <div class="table-wrap" id="db-reviews"></div>
+            </div>
+          </div>
+        </section>
+      </main>
     </div>
-  </main>
+  </div>
   <script>
     const byId = (id) => document.getElementById(id);
     const status = byId("status");
+    const navItems = Array.from(document.querySelectorAll(".nav-item"));
+    const views = Array.from(document.querySelectorAll(".view"));
+    const reviewSort = byId("review-sort");
 
     function listToText(list) {
       return (list || []).join("\\n");
@@ -419,11 +554,79 @@ HTML = """<!doctype html>
       window.open("/latest-html", "_blank");
     }
 
+    function setView(viewId) {
+      views.forEach((view) => {
+        view.classList.toggle("active", view.id === viewId);
+      });
+      navItems.forEach((item) => {
+        item.classList.toggle("active", item.dataset.view === viewId);
+      });
+      if (viewId === "db-view") {
+        loadDb();
+      }
+    }
+
+    function renderTable(container, rows) {
+      if (!rows || rows.length === 0) {
+        container.innerHTML = "<div class='hint' style='padding: 12px;'>Sin datos.</div>";
+        return;
+      }
+      const headers = Object.keys(rows[0]);
+      const thead = "<thead><tr>" + headers.map((h) => `<th>${h}</th>`).join("") + "</tr></thead>";
+      const tbody = "<tbody>" + rows.map((row) => {
+        return "<tr>" + headers.map((h) => `<td>${row[h] ?? ""}</td>`).join("") + "</tr>";
+      }).join("") + "</tbody>";
+      container.innerHTML = `<table>${thead}${tbody}</table>`;
+    }
+
+    function renderReviews(container, rows) {
+      if (!rows || rows.length === 0) {
+        container.innerHTML = "<div class='hint' style='padding: 12px;'>Sin datos.</div>";
+        return;
+      }
+      const headers = ["Humor score", "Nombre", "Localidad", "Fecha"];
+      const thead = "<thead><tr>" + headers.map((h) => `<th>${h}</th>`).join("") + "</tr></thead>";
+      const tbody = "<tbody>" + rows.map((row) => {
+        const name = row.place_name || "Sitio";
+        const url = row.review_url || "";
+        const site = url ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${name}</a>` : name;
+        return "<tr>" + [
+          `<td>${row.humor_score ?? ""}</td>`,
+          `<td>${site}</td>`,
+          `<td>${row.place_locality || ""}</td>`,
+          `<td>${row.date || ""}</td>`,
+        ].join("") + "</tr>";
+      }).join("") + "</tbody>";
+      container.innerHTML = `<table>${thead}${tbody}</table>`;
+    }
+
+    async function loadDb() {
+      const res = await fetch(`/db-data?sort=${encodeURIComponent(reviewSort.value)}`);
+      if (!res.ok) {
+        byId("db-summary").innerHTML = "<div class='hint'>No se pudo cargar la base de datos.</div>";
+        return;
+      }
+      const payload = await res.json();
+      const summary = payload.summary || {};
+      byId("db-summary").innerHTML = [
+        `<div class="db-summary-card"><div class="label">Lugares</div><div class="value">${summary.places || 0}</div></div>`,
+        `<div class="db-summary-card"><div class="label">Reseñas</div><div class="value">${summary.reviews || 0}</div></div>`,
+        `<div class="db-summary-card"><div class="label">Reseñas vacías (última)</div><div class="value">${summary.empty_reviews_skipped_last || 0}</div></div>`,
+        `<div class="db-summary-card"><div class="label">Reseñas vacías (total)</div><div class="value">${summary.empty_reviews_skipped_total || 0}</div></div>`,
+      ].join("");
+      renderReviews(byId("db-reviews"), payload.reviews || []);
+    }
+
     byId("save").addEventListener("click", saveConfig);
     byId("reload").addEventListener("click", loadConfig);
     byId("run-weekly").addEventListener("click", runWeekly);
     byId("run-dry").addEventListener("click", runDryRun);
     byId("open-latest").addEventListener("click", openLatest);
+    byId("db-refresh").addEventListener("click", loadDb);
+    reviewSort.addEventListener("change", loadDb);
+    navItems.forEach((item) => {
+      item.addEventListener("click", () => setView(item.dataset.view));
+    });
     loadConfig();
   </script>
 </body>
@@ -441,6 +644,82 @@ def _write_config(payload: Dict[str, Any]) -> None:
         yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
+
+
+def _db_path() -> Path:
+    cfg = _load_config()
+    data_dir = (cfg.get("app", {}) or {}).get("data_dir", "data")
+    return (ROOT / data_dir / "humor_reviews.db").resolve()
+
+
+def _fetch_db_snapshot(sort_by: str) -> Dict[str, Any]:
+    db_path = _db_path()
+    if not db_path.exists():
+        return {
+            "summary": {"places": 0, "reviews": 0, "shortlist": 0},
+            "places": [],
+            "reviews": [],
+            "shortlist": [],
+        }
+
+    def _rows(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute(sql, params).fetchall()
+                return [dict(row) for row in rows]
+            except sqlite3.OperationalError:
+                return []
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ingest_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event TEXT,
+                count INTEGER,
+                created_at TEXT
+            )
+            """
+        )
+
+    def _scalar(sql: str) -> int:
+        rows = _rows(sql)
+        if rows and "count" in rows[0]:
+            return int(rows[0]["count"])
+        return 0
+
+    summary = {
+        "places": _rows("SELECT COUNT(*) as count FROM places")[0]["count"],
+        "reviews": _rows("SELECT COUNT(*) as count FROM reviews")[0]["count"],
+        "shortlist": _rows("SELECT COUNT(*) as count FROM shortlist")[0]["count"],
+    }
+    summary["empty_reviews_skipped_total"] = _scalar(
+        "SELECT COALESCE(SUM(count), 0) as count FROM ingest_stats WHERE event = 'empty_reviews_skipped'"
+    )
+    summary["empty_reviews_skipped_last"] = _scalar(
+        "SELECT count as count FROM ingest_stats WHERE event = 'empty_reviews_skipped' ORDER BY created_at DESC LIMIT 1"
+    )
+    order_by = "r.updated_at DESC"
+    if sort_by == "humor_score":
+        order_by = "r.humor_score DESC, r.updated_at DESC"
+
+    reviews = _rows(
+        "SELECT "
+        "r.rating, r.date, r.humor_score, r.safety_label, r.status, r.updated_at, r.review_url, "
+        "p.name as place_name, p.address as place_locality "
+        "FROM reviews r "
+        "LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id) "
+        f"ORDER BY {order_by} LIMIT 200"
+    )
+    shortlist = _rows(
+        "SELECT review_id, batch_date, score FROM shortlist ORDER BY batch_date DESC LIMIT 200"
+    )
+    return {
+        "summary": summary,
+        "reviews": reviews,
+        "shortlist": shortlist,
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -467,6 +746,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
             else:
                 self._send(404, b"No HTML output found", "text/plain")
+            return
+        if self.path.startswith("/db-data"):
+            query = self.path.split("?", 1)[1] if "?" in self.path else ""
+            sort_by = "updated_at"
+            for part in query.split("&"):
+                if not part:
+                    continue
+                key, _, value = part.partition("=")
+                if key == "sort":
+                    sort_by = value
+            payload = _fetch_db_snapshot(sort_by)
+            self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
             return
         if self.path.startswith("/outputs/"):
             name = self.path.replace("/outputs/", "", 1)

@@ -93,6 +93,16 @@ class Storage:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ingest_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event TEXT,
+                    count INTEGER,
+                    created_at TEXT
+                )
+                """
+            )
             self._ensure_place_columns(conn)
             self._ensure_review_columns(conn)
 
@@ -207,6 +217,17 @@ class Storage:
                 UPDATE reviews SET status=?, updated_at=? WHERE review_id=?
                 """,
                 (status, now, review_id),
+            )
+
+    def record_stat(self, event: str, count: int) -> None:
+        now = datetime.utcnow().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO ingest_stats (event, count, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (event, count, now),
             )
 
     def fetch_candidates(self, humor_threshold: int, allow_repeat: bool) -> list[Review]:

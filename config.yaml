@@ -1,10 +1,10 @@
 app:
   output_dir: out
   data_dir: data
-  weekly_target_count: 15
-  humor_threshold: 60
-  max_reviews_per_place: 30
-  max_places_per_run: 5
+  weekly_target_count: 20
+  humor_threshold: 0
+  max_reviews_per_place: 20
+  max_places_per_run: 20
   allow_repeat_suggestions: true
   locale: es
   enable_screenshots: false
@@ -17,16 +17,17 @@ discovery:
   provider: serpapi_maps
   country: ES
   regions:
-  - Zaragoza
+  - Calatayud, Zaragoza
+  - Ateca, Zaragoza
+  - Ariza, Zaragoza
+  - Sigüenza, Guadalajara
+  - Molina de Aragón, Guadalajara
+  - Arcos de Jalón, Soria
+  - Santa María de Huerta, Soria
   categories:
-  - restaurant
-  - hotel
-  - tourist_attraction
-  - parking
-  - car_wash
-  - spa
+  - Iglesia
   min_total_reviews: 150
-  require_recent_days: 180
+  require_recent_days: 580
 providers:
   serpapi:
     api_key_env: SERPAPI_API_KEY
@@ -38,38 +39,23 @@ scoring:
   api_key_env: OPENAI_API_KEY
   temperature: 0.2
   max_output_tokens: 20
-  prompt: 'Evalua UNA resena individual y devuelve SOLO una puntuacion de humor.
-
-    Devuelve un entero de 0 a 100 donde 0 es nada gracioso y 100 es muy gracioso.
-
-    Prioriza resenas de una estrella si son graciosas.
-
-    Nuestro humor es gamberro: insultos, situaciones dantescas y anecdotas graciosas.
-
-    Si hay respuesta del propietario graciosa y no es copia y pega, sube la puntuacion.
-
-    Devuelve JSON con score (0-100), notes (explicacion corta) y tags (lista).
-
-    Si no hay nada gracioso, pon una puntuacion baja.
-
-    No incluyas explicaciones ni texto extra.
-
-
-    ESTRELLAS:
-
-    {rating}
-
-
-    RESENA:
-
-    {review_text}
-
-
-    RESPUESTA DEL PROPIETARIO:
-
-    {owner_reply}
-
-    '
+  prompt: "Evalúa UNA única reseña y determina cuán graciosa es.\n\nDevuelve EXCLUSIVAMENTE\
+    \ un JSON válido, sin texto adicional.\n\nObjetivo\n\nAsignar una puntuación de\
+    \ humor de 0 a 100, donde:\n\t•\t0 = nada gracioso\n\t•\t100 = extremadamente\
+    \ gracioso\n\nCriterios de humor (prioridad alta → baja)\n\t1.\tHumor gamberro:\
+    \ insultos, exageraciones, mala leche creativa, situaciones dantescas.\n\t2.\t\
+    Anécdotas absurdas o inesperadas contadas con gracia.\n\t3.\tContraste fuerte\
+    \ entre expectativas y experiencia real.\n\t4.\tRespuesta del propietario:\n\t\
+    •\tSi es graciosa, irónica o entra al trapo → sube claramente la puntuación.\n\
+    \t•\tSi es copia-pega, genérica o defensiva → no suma.\n\t5.\tReseñas de 1 estrella:\n\
+    \t•\tSi son graciosas, tienen prioridad frente a reseñas de más estrellas.\n\n\
+    Penalizaciones\n\t•\tQuejas serias sin gracia.\n\t•\tTexto neutro, técnico o educado.\n\
+    \t•\tEnfado plano sin creatividad.\n\t•\tHumor involuntario muy débil.\n\nOutput\n\
+    \nDevuelve solo este JSON:\n{{\n  \"score\": <entero 0-100>,\n  \"notes\": \"\
+    <explicación muy breve del porqué>\",\n  \"tags\": [\"insultos\", \"anecdota\"\
+    , \"respuesta_propietario\", \"exageracion\", \"...\"]\n}}\n\nSi no hay nada gracioso,\
+    \ asigna una puntuación baja (0–20).\n\n⸻\n\nInput\n\nESTRELLAS:\n{rating}\n\n\
+    RESEÑA:\n{review_text}\n\nRESPUESTA DEL PROPIETARIO:\n{owner_reply}\n"
 safety:
   pii_patterns:
   - \b\d{3}[- .]?\d{2}[- .]?\d{4}\b

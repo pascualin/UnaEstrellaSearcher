@@ -24,6 +24,7 @@ def run_discovery(storage: Storage, settings) -> int:
 
 def run_collection(storage: Storage, settings) -> int:
     count = 0
+    skipped_empty = 0
     per_place_counts: dict[str, int] = {}
     place_ids = storage.get_place_ids()
     for raw in collect_reviews(
@@ -31,6 +32,9 @@ def run_collection(storage: Storage, settings) -> int:
         settings.providers,
         settings.app.max_reviews_per_place,
     ):
+        if not (raw.text or "").strip():
+            skipped_empty += 1
+            continue
         if raw.rating > 2:
             continue
 
@@ -62,6 +66,7 @@ def run_collection(storage: Storage, settings) -> int:
         per_place_counts[raw.place_id] += 1
         count += 1
 
+    storage.record_stat("empty_reviews_skipped", skipped_empty)
     return count
 
 
