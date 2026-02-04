@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 import json
 import html as html_lib
@@ -114,7 +114,8 @@ def export_shortlist_html(
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     batch_date = date.today().isoformat()
-    html_path = output_dir / f"weekly_shortlist_{batch_date}.html"
+    batch_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    html_path = output_dir / f"weekly_shortlist_{batch_stamp}.html"
 
     def _rel_path(path: Path | None) -> str:
         if not path:
