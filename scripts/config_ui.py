@@ -174,7 +174,8 @@ def _render_review_detail(review_id: str) -> str | None:
     reviewer_url = _esc(reviewer_url_raw)
     summary = _esc(row["summary"] or "")
     review_text = _esc(row["text"] or "")
-    owner_reply = _esc(row["owner_reply"] or "")
+    owner_reply_raw = str(row["owner_reply"] or "").strip()
+    owner_reply = _esc(_format_owner_reply(owner_reply_raw))
     tags = _esc(row["tags"] or "")
     place_line = f"{place_name} {'· ' + place_address if place_address else ''}".strip()
     reviewer_html = f'<a href="{reviewer_url}">{reviewer}</a>' if reviewer_url else reviewer
@@ -184,13 +185,13 @@ def _render_review_detail(review_id: str) -> str | None:
         if review_url
         else ""
     )
-    summary_html = (
-        f'<div class="review-text"><div class="label">Resumen</div><div class="block">{summary}</div></div>'
-        if summary
-        else ""
-    )
+    summary_html = ""
+    if summary and len(str(row["text"] or "")) >= 420:
+        summary_html = (
+            f'<div class="review-text"><div class="label">Resumen (IA)</div><div class="block">{summary}</div></div>'
+        )
     owner_reply_html = (
-        f'<div class="review-text"><div class="label">Respuesta del propietario</div><div class="block">{owner_reply}</div></div>'
+        f'<div class="review-text review-owner"><div class="label"><strong>Respuesta del propietario</strong></div><div class="block">{owner_reply}</div></div>'
         if owner_reply
         else ""
     )
@@ -227,6 +228,25 @@ def _parse_reviewer_payload(raw: str) -> tuple[str, str] | None:
         if name or link:
             return name or "Anonymous", link
     return None
+
+
+def _format_owner_reply(raw: str) -> str:
+    raw = raw.strip()
+    if not raw:
+        return ""
+    if raw.startswith("{") and raw.endswith("}"):
+        try:
+            payload = ast.literal_eval(raw)
+        except Exception:
+            return raw
+        if isinstance(payload, dict):
+            text = str(payload.get("text") or payload.get("snippet") or payload.get("response") or "").strip()
+            date = str(payload.get("date") or payload.get("published_date") or "").strip()
+            if text and date:
+                return f"{text}\n\n{date}"
+            if text:
+                return text
+    return raw
 
 
 def _format_datetime(raw: str) -> str:

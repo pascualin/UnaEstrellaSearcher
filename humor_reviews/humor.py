@@ -39,18 +39,18 @@ def score_review(
     )
 
     try:
-            response = client.chat.completions.create(
-                model=settings.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "Devuelve SOLO JSON con: "
-                            "score (entero 0-100), notes (string), tags (array de strings), summary (string corto)."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
+        response = client.chat.completions.create(
+            model=settings.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Devuelve SOLO JSON con: "
+                        "score (entero 0-100), notes (string), tags (array de strings), summary (string corto)."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
             response_format={
                 "type": "json_schema",
                 "json_schema": {

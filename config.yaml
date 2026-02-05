@@ -3,9 +3,9 @@ app:
   data_dir: data
   weekly_target_count: 20
   humor_threshold: 0
-  max_reviews_per_place: 20
-  max_places_per_run: 20
-  allow_repeat_suggestions: true
+  max_reviews_per_place: 5
+  max_places_per_run: 30
+  allow_repeat_suggestions: false
   locale: es
   enable_screenshots: false
   screenshot_dir: out/screenshots
@@ -17,17 +17,20 @@ discovery:
   provider: serpapi_maps
   country: ES
   regions:
-  - Calatayud, Zaragoza
-  - Ateca, Zaragoza
-  - Ariza, Zaragoza
-  - Sigüenza, Guadalajara
-  - Molina de Aragón, Guadalajara
-  - Arcos de Jalón, Soria
-  - Santa María de Huerta, Soria
+  - Zaragoza, Spain
   categories:
-  - Iglesia
-  min_total_reviews: 150
-  require_recent_days: 580
+  - Restaurantes turísticos
+  - Bares de barrio
+  - Parkings
+  - Talleres mecánicos
+  - low-cost
+  - Peluquerías y barberías
+  - Atracciones turísticas
+  - Clínicas dentales
+  - Autoescuelas
+  - Funerarias
+  min_total_reviews: 250
+  require_recent_days: 190
 providers:
   serpapi:
     api_key_env: SERPAPI_API_KEY
@@ -53,51 +56,14 @@ scoring:
     \t•\tEnfado plano sin creatividad.\n\t•\tHumor involuntario muy débil.\n\nOutput\n\
     \nDevuelve solo este JSON:\n{{\n  \"score\": <entero 0-100>,\n  \"notes\": \"\
     <explicación muy breve del porqué>\",\n  \"tags\": [\"insultos\", \"anecdota\"\
-    , \"respuesta_propietario\", \"exageracion\", \"...\"],\n  \"summary\": \"<resumen corto de 1-2 frases que conserve el humor>\"\n}}\n\nSi no hay nada gracioso,\
+    , \"respuesta_propietario\", \"exageracion\", \"...\"],\n  \"summary\": \"<resumen\
+    \ corto de 1-2 frases que conserve el humor>\"\n}}\n\nSi no hay nada gracioso,\
     \ asigna una puntuación baja (0–20).\n\n⸻\n\nInput\n\nESTRELLAS:\n{rating}\n\n\
     RESEÑA:\n{review_text}\n\nRESPUESTA DEL PROPIETARIO:\n{owner_reply}\n"
 safety:
-  pii_patterns:
-  - \b\d{3}[- .]?\d{2}[- .]?\d{4}\b
-  - \b\d{10}\b
-  sensitive_keywords:
-  - agresión
-  - asalto
-  - violación
-  - violencia sexual
-  - niño
-  - niña
-  - menor
-  - menores
-  - médico
-  - hospital
-  - suicidio
-  - asesinato
-  - abuso
-  - acosador
-  - assault
-  - rape
-  - child
-  - minor
-  - medical
-  - hospital
-  - suicide
-  - murder
-  - abuse
-  - stalker
-  accusation_keywords:
-  - robó
-  - robo
-  - robaron
-  - me robaron
-  - fraude
-  - estafa
-  - estafaron
-  - me estafaron
-  - stole
-  - theft
-  - fraud
-  - scam
+  pii_patterns: []
+  sensitive_keywords: []
+  accusation_keywords: []
 curation:
   theme_limits:
     owner_meltdown: 10
