@@ -26,7 +26,6 @@
             <h2>Reseña</h2>
             {{summary_html}}
             <div class="review-text">
-              <div class="label">Texto completo</div>
               <div class="block">{{review_text}}</div>
             </div>
             {{owner_reply_html}}
@@ -51,9 +50,14 @@
                 <span><strong>Fecha:</strong> {{date}}</span>
                 <span><strong>Rating:</strong> {{rating}} estrellas</span>
                 <span><strong>Status:</strong> {{status}}</span>
+                <span><strong>Revisión:</strong> <span id="reviewed-label">{{reviewed_label}}</span></span>
                 <span><strong>Reviewer:</strong> {{reviewer_html}}</span>
                 <span><strong>Actualizado:</strong> {{updated_at}}</span>
               </div>
+              <div class="actions">
+                <button class="secondary" id="reviewed-toggle" data-review-id="{{review_id}}" data-reviewed="{{reviewed}}">{{reviewed_button}}</button>
+              </div>
+              <div class="hint" id="reviewed-feedback"></div>
               <div class="links">
                 {{maps_link}}
               </div>
@@ -63,5 +67,42 @@
       </main>
     </div>
   </div>
+  <script>
+    const toggle = document.getElementById("reviewed-toggle");
+    const label = document.getElementById("reviewed-label");
+    const feedback = document.getElementById("reviewed-feedback");
+
+    async function toggleReviewed() {
+      if (!toggle) return;
+      const reviewId = toggle.dataset.reviewId || "";
+      const current = toggle.dataset.reviewed === "true";
+      const next = !current;
+      toggle.disabled = true;
+      if (feedback) feedback.textContent = "";
+      try {
+        const res = await fetch("/api/review-reviewed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ review_id: reviewId, reviewed: next }),
+        });
+        if (!res.ok) {
+          if (feedback) feedback.textContent = "No se pudo guardar el cambio. Reinicia el servidor de la UI y prueba de nuevo.";
+          return;
+        }
+        toggle.dataset.reviewed = next ? "true" : "false";
+        label.textContent = next ? "Revisada" : "Pendiente de revisar";
+        toggle.textContent = next ? "Quitar marca de revisada" : "Marcar como revisada";
+        if (feedback) feedback.textContent = "Estado actualizado.";
+      } catch (error) {
+        if (feedback) feedback.textContent = "No se pudo conectar con la UI local.";
+      } finally {
+        toggle.disabled = false;
+      }
+    }
+
+    if (toggle) {
+      toggle.addEventListener("click", toggleReviewed);
+    }
+  </script>
 </body>
 </html>

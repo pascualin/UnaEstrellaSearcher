@@ -14,7 +14,6 @@ Automated discovery and curation of humorous reviews for a weekly shortlist.
 - `pip` available in your environment
 - SerpApi API key for discovery and review collection
 - OpenAI API key optional (only if you enable LLM scoring)
-- Playwright browsers optional (only if you enable screenshots)
 
 ## Setup
 1. Copy `config.example.yaml` to `config.yaml` and edit locations/categories.
@@ -25,10 +24,6 @@ Automated discovery and curation of humorous reviews for a weekly shortlist.
    ```bash
    pip install -r requirements.txt
    ```
-4. If you want screenshots, install Playwright browsers:
-   ```bash
-   python -m playwright install
-   ```
 
 ## Usage
 Run the full weekly pipeline:
@@ -36,14 +31,19 @@ Run the full weekly pipeline:
 python -m humor_reviews.run weekly
 ```
 
-Outputs are written to `out/`:
-- `weekly_shortlist_YYYY-MM-DD.json`
-- `weekly_shortlist_YYYY-MM-DD.md`
+Run a rehearsal without external API calls:
+```bash
+python -m humor_reviews.run weekly --no-api
+```
+
+Results are stored in the SQLite database under `data/`.
 
 ### Individual pipeline steps
 - `python -m humor_reviews.run discover`
 - `python -m humor_reviews.run collect`
 - `python -m humor_reviews.run shortlist`
+- `python -m humor_reviews.run discover --no-api` (skip discovery calls)
+- `python -m humor_reviews.run collect --no-api` (skip collection/scoring calls)
 
 ### Manual review management
 - Add a place:

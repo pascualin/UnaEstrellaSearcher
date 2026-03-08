@@ -3,7 +3,9 @@ from __future__ import annotations
 import ast
 import html as html_lib
 import json
+import os
 import sqlite3
+import threading
 from datetime import datetime
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -48,11 +50,34 @@ def _db_path() -> Path:
     return (ROOT / data_dir / "humor_reviews.db").resolve()
 
 
-def _fetch_db_snapshot(sort_by: str) -> Dict[str, Any]:
+def _progress_log_path() -> Path:
+    cfg = _load_config()
+    data_dir = (cfg.get("app", {}) or {}).get("data_dir", "data")
+    return (ROOT / data_dir / "progress.log").resolve()
+
+
+def _append_progress_log(path: Path, event: str, payload: dict) -> None:
+    record = {"event": event, **payload}
+    try:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        return
+
+
+def _ensure_review_columns(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()}
+    if "summary" not in columns:
+        conn.execute("ALTER TABLE reviews ADD COLUMN summary TEXT")
+    if "reviewed" not in columns:
+        conn.execute("ALTER TABLE reviews ADD COLUMN reviewed INTEGER DEFAULT 0")
+
+
+def _fetch_db_snapshot(sort_by: str, show_reviewed: bool) -> Dict[str, Any]:
     db_path = _db_path()
     if not db_path.exists():
         return {
-            "summary": {"places": 0, "reviews": 0, "shortlist": 0},
+            "summary": {"places": 0, "reviews": 0, "shortlist": 0, "reviewed": 0, "pending_review": 0},
             "places": [],
             "reviews": [],
             "shortlist": [],
@@ -78,6 +103,7 @@ def _fetch_db_snapshot(sort_by: str) -> Dict[str, Any]:
             )
             """
         )
+        _ensure_review_columns(conn)
 
     def _scalar(sql: str) -> int:
         rows = _rows(sql)
@@ -89,6 +115,8 @@ def _fetch_db_snapshot(sort_by: str) -> Dict[str, Any]:
         "places": _rows("SELECT COUNT(*) as count FROM places")[0]["count"],
         "reviews": _rows("SELECT COUNT(*) as count FROM reviews")[0]["count"],
         "shortlist": _rows("SELECT COUNT(*) as count FROM shortlist")[0]["count"],
+        "reviewed": _scalar("SELECT COUNT(*) as count FROM reviews WHERE COALESCE(reviewed, 0) = 1"),
+        "pending_review": _scalar("SELECT COUNT(*) as count FROM reviews WHERE COALESCE(reviewed, 0) = 0"),
     }
     summary["empty_reviews_skipped_total"] = _scalar(
         "SELECT COALESCE(SUM(count), 0) as count FROM ingest_stats WHERE event = 'empty_reviews_skipped'"
@@ -99,13 +127,16 @@ def _fetch_db_snapshot(sort_by: str) -> Dict[str, Any]:
     order_by = "r.updated_at DESC"
     if sort_by == "humor_score":
         order_by = "r.humor_score DESC, r.updated_at DESC"
+    review_filter = "" if show_reviewed else "WHERE COALESCE(r.reviewed, 0) = 0"
 
     reviews = _rows(
         "SELECT "
         "r.review_id, r.rating, r.date, r.humor_score, r.safety_label, r.status, r.updated_at, r.review_url, "
+        "COALESCE(r.reviewed, 0) as reviewed, "
         "p.name as place_name, p.address as place_locality "
         "FROM reviews r "
         "LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id) "
+        f"{review_filter} "
         f"ORDER BY {order_by} LIMIT 200"
     )
     shortlist = _rows(
@@ -124,13 +155,14 @@ def _render_review_detail(review_id: str) -> str | None:
         return None
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
+        _ensure_review_columns(conn)
         try:
             row = conn.execute(
                 """
                 SELECT
                     r.review_id, r.place_id, r.rating, r.date, r.reviewer_name, r.reviewer_profile_url,
                     r.text, r.summary, r.owner_reply, r.review_url, r.humor_score, r.humor_notes,
-                    r.safety_label, r.safety_notes, r.tags, r.status, r.updated_at,
+                    r.safety_label, r.safety_notes, r.tags, r.status, r.updated_at, COALESCE(r.reviewed, 0) as reviewed,
                     p.name as place_name, p.address as place_address, p.category as place_category
                 FROM reviews r
                 LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id)
@@ -147,7 +179,7 @@ def _render_review_detail(review_id: str) -> str | None:
                 SELECT
                     r.review_id, r.place_id, r.rating, r.date, r.reviewer_name, r.reviewer_profile_url,
                     r.text, r.summary, r.owner_reply, r.review_url, r.humor_score, r.humor_notes,
-                    r.safety_label, r.safety_notes, r.tags, r.status, r.updated_at,
+                    r.safety_label, r.safety_notes, r.tags, r.status, r.updated_at, COALESCE(r.reviewed, 0) as reviewed,
                     p.name as place_name, p.address as place_address, p.category as place_category
                 FROM reviews r
                 LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id)
@@ -195,6 +227,9 @@ def _render_review_detail(review_id: str) -> str | None:
         if owner_reply
         else ""
     )
+    reviewed = bool(row["reviewed"])
+    reviewed_label = "Revisada" if reviewed else "Pendiente de revisar"
+    reviewed_button = "Quitar marca de revisada" if reviewed else "Marcar como revisada"
 
     template = _load_html(REVIEW_HTML_PATH, "Missing review_detail.html")
     updated_at = _format_datetime(str(row["updated_at"] or ""))
@@ -211,10 +246,28 @@ def _render_review_detail(review_id: str) -> str | None:
         .replace("{{date}}", _esc(row["date"]))
         .replace("{{rating}}", _esc(row["rating"]))
         .replace("{{status}}", _esc(row["status"]))
+        .replace("{{review_id}}", _esc(row["review_id"]))
+        .replace("{{reviewed}}", "true" if reviewed else "false")
+        .replace("{{reviewed_label}}", reviewed_label)
+        .replace("{{reviewed_button}}", reviewed_button)
         .replace("{{reviewer_html}}", reviewer_html)
         .replace("{{updated_at}}", _esc(updated_at))
         .replace("{{maps_link}}", maps_link)
     )
+
+
+def _set_reviewed(review_id: str, reviewed: bool) -> bool:
+    db_path = _db_path()
+    if not db_path.exists():
+        return False
+    with sqlite3.connect(db_path) as conn:
+        _ensure_review_columns(conn)
+        now = datetime.utcnow().isoformat()
+        cur = conn.execute(
+            "UPDATE reviews SET reviewed=?, updated_at=? WHERE review_id=?",
+            (1 if reviewed else 0, now, review_id),
+        )
+        return cur.rowcount > 0
 
 
 def _parse_reviewer_payload(raw: str) -> tuple[str, str] | None:
@@ -326,34 +379,43 @@ class Handler(BaseHTTPRequestHandler):
             cfg = _load_config()
             self._send(200, json.dumps(cfg).encode("utf-8"), "application/json")
             return
-        if self.path == "/latest-html":
-            latest = _find_latest_html()
-            if latest:
-                self.send_response(302)
-                self.send_header("Location", f"/outputs/{latest.name}")
-                self.end_headers()
-            else:
-                self._send(404, b"No HTML output found", "text/plain")
+        if self.path.startswith("/api/progress"):
+            log_path = _progress_log_path()
+            offset = 0
+            if "?" in self.path:
+                query = urlsplit(self.path).query
+                parsed = parse_qs(query)
+                try:
+                    offset = int((parsed.get("offset") or ["0"])[0])
+                except ValueError:
+                    offset = 0
+            if not log_path.exists():
+                payload = {"lines": [], "next_offset": 0}
+                self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
+                return
+            data = log_path.read_bytes()
+            if offset < 0 or offset > len(data):
+                offset = 0
+            chunk = data[offset:]
+            text = chunk.decode("utf-8", errors="ignore")
+            lines = [line for line in text.splitlines() if line.strip()]
+            payload = {"lines": lines, "next_offset": len(data)}
+            self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
             return
         if self.path.startswith("/api/db-data"):
             query = self.path.split("?", 1)[1] if "?" in self.path else ""
             sort_by = "updated_at"
+            show_reviewed = False
             for part in query.split("&"):
                 if not part:
                     continue
                 key, _, value = part.partition("=")
                 if key == "sort":
                     sort_by = value
-            payload = _fetch_db_snapshot(sort_by)
+                if key == "show_reviewed":
+                    show_reviewed = value.lower() in {"1", "true", "yes", "on"}
+            payload = _fetch_db_snapshot(sort_by, show_reviewed)
             self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
-            return
-        if self.path.startswith("/outputs/"):
-            name = self.path.replace("/outputs/", "", 1)
-            file_path = ROOT / "out" / name
-            if file_path.exists() and file_path.is_file():
-                self._send(200, file_path.read_bytes(), "text/html; charset=utf-8")
-                return
-            self._send(404, b"Not found", "text/plain")
             return
         self._send(404, b"Not found", "text/plain")
 
@@ -367,15 +429,33 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/run-weekly":
             import subprocess
 
-            result = subprocess.run(
-                ["python3", "-m", "humor_reviews.run", "weekly"],
-                cwd=str(ROOT),
-                capture_output=True,
-                text=True,
-            )
-            output = (result.stdout or "") + (result.stderr or "")
-            body = output.encode("utf-8")
-            self._send(200, body, "text/plain; charset=utf-8")
+            log_path = _progress_log_path()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text("", encoding="utf-8")
+
+            def _runner() -> None:
+                env = os.environ.copy()
+                env["PROGRESS_LOG"] = str(log_path)
+                result = subprocess.run(
+                    ["python3", "-m", "humor_reviews.run", "weekly"],
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                if result.stdout:
+                    _append_progress_log(log_path, "process_output", {"stream": "stdout", "text": result.stdout})
+                if result.stderr:
+                    _append_progress_log(log_path, "process_output", {"stream": "stderr", "text": result.stderr})
+                if result.returncode != 0:
+                    _append_progress_log(
+                        log_path,
+                        "run_failed",
+                        {"returncode": result.returncode},
+                    )
+
+            threading.Thread(target=_runner, daemon=True).start()
+            self._send(202, b"started", "text/plain; charset=utf-8")
             return
         if self.path == "/api/run-dry-run":
             import subprocess
@@ -390,6 +470,19 @@ class Handler(BaseHTTPRequestHandler):
             body = output.encode("utf-8")
             self._send(200, body, "text/plain; charset=utf-8")
             return
+        if self.path == "/api/review-reviewed":
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            review_id = str(payload.get("review_id") or "").strip()
+            reviewed = bool(payload.get("reviewed"))
+            if not review_id:
+                self._send(400, b"missing review_id", "text/plain")
+                return
+            if not _set_reviewed(review_id, reviewed):
+                self._send(404, b"review not found", "text/plain")
+                return
+            self._send(200, json.dumps({"ok": True, "reviewed": reviewed}).encode("utf-8"), "application/json")
+            return
         self._send(404, b"Not found", "text/plain")
 
 
@@ -397,17 +490,5 @@ def main() -> None:
     server = HTTPServer((HOST, PORT), Handler)
     print(f"Config UI running at http://{HOST}:{PORT}")
     server.serve_forever()
-
-
-def _find_latest_html() -> Path | None:
-    out_dir = ROOT / "out"
-    if not out_dir.exists():
-        return None
-    candidates = sorted(out_dir.glob("weekly_shortlist_*.html"))
-    if not candidates:
-        return None
-    return max(candidates, key=lambda p: p.stat().st_mtime)
-
-
 if __name__ == "__main__":
     main()

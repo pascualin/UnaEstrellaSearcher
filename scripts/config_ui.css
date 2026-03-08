@@ -138,6 +138,18 @@ main {
     textarea { min-height: 120px; resize: vertical; }
     .row { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
     .toggle { display: flex; align-items: center; gap: 10px; margin-top: 10px; color: var(--muted); }
+    .compact-toggle {
+      margin-top: 0;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: var(--ink-invert);
+    }
+    .compact-toggle input {
+      width: auto;
+      margin: 0;
+    }
     .actions {
       margin-top: 18px;
       display: flex;
@@ -227,6 +239,9 @@ main {
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+.links {
+  margin-top: 14px;
+}
 .review-row { cursor: pointer; }
 .review-row:hover { background: rgba(255, 255, 255, 0.06); }
 .rationale {
@@ -273,6 +288,11 @@ body {
 .meta.meta-stack span {
   display: block;
 }
+.meta.meta-stack {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
 .block {
   word-break: break-word;
   overflow-wrap: anywhere;
@@ -281,6 +301,26 @@ body {
   .detail-layout {
     grid-template-columns: 1fr;
   }
+}
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 10, 16, 0.55);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 20;
+  backdrop-filter: blur(6px);
+}
+.modal.is-open { display: flex; }
+.modal-card {
+  width: min(420px, 92vw);
+  background: rgba(20, 26, 36, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 18px;
+  box-shadow: var(--shadow);
 }
 @media (max-width: 980px) {
       .layout {

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Iterable
 
 import requests
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from .api_cache import load_cached_json, save_cached_json
 from .settings import ProviderSettings
 
 
@@ -30,8 +33,20 @@ def _serpapi_reviews(
     api_key: str,
     hl: str,
     gl: str,
+    cache_dir: Path,
     next_page_token: str | None = None,
 ) -> dict:
+    cache_payload = {
+        "data_id": data_id,
+        "hl": hl,
+        "gl": gl,
+        "next_page_token": next_page_token or "",
+        "sort_by": "ratingLow",
+    }
+    cached = load_cached_json(cache_dir, "reviews", cache_payload)
+    if isinstance(cached, dict):
+        return cached
+
     url = "https://serpapi.com/search.json"
     params = {
         "engine": "google_maps_reviews",
@@ -46,16 +61,29 @@ def _serpapi_reviews(
     try:
         resp = requests.get(url, params=params, timeout=20)
         resp.raise_for_status()
+    except requests.HTTPError as exc:
+        redacted = _redact_request_url(getattr(exc, "request", None))
+        status = getattr(exc.response, "status_code", None)
+        body = _response_excerpt(getattr(exc, "response", None))
+        raise RuntimeError(
+            f"SerpApi HTTP error {status} for {redacted}. Response: {body}"
+        ) from exc
     except requests.RequestException as exc:
         redacted = _redact_request_url(getattr(exc, "request", None))
-        raise RuntimeError(f"SerpApi request failed: {redacted}") from exc
-    return resp.json()
+        raise RuntimeError(
+            f"SerpApi request failed for {redacted}. "
+            f"{exc.__class__.__name__}: {exc}"
+        ) from exc
+    payload = resp.json()
+    save_cached_json(cache_dir, "reviews", cache_payload, payload)
+    return payload
 
 
 def collect_reviews(
     data_ids: Iterable[str],
     providers: ProviderSettings,
     max_reviews_per_place: int,
+    cache_dir: Path,
 ) -> Iterable[RawReview]:
     api_key = os.getenv(providers.serpapi_api_key_env)
     if not api_key:
@@ -67,13 +95,21 @@ def collect_reviews(
         fetched = 0
         next_page_token = None
         while fetched < max_reviews_per_place:
-            payload = _serpapi_reviews(
-                data_id=data_id,
-                api_key=api_key,
-                hl=providers.serpapi_hl,
-                gl=providers.serpapi_gl,
-                next_page_token=next_page_token,
-            )
+            try:
+                payload = _serpapi_reviews(
+                    data_id=data_id,
+                    api_key=api_key,
+                    hl=providers.serpapi_hl,
+                    gl=providers.serpapi_gl,
+                    cache_dir=cache_dir,
+                    next_page_token=next_page_token,
+                )
+            except Exception as exc:
+                _emit_collection_progress(
+                    "review_fetch_failed",
+                    {"data_id": data_id, "error": str(exc)},
+                )
+                break
 
             place_url = payload.get("place_info", {}).get("link", "") or payload.get("search_metadata", {}).get("google_maps_url", "")
             reviews = payload.get("reviews", []) or []
@@ -118,6 +154,18 @@ def collect_reviews(
         time.sleep(1.0)
 
 
+def _emit_collection_progress(event: str, payload: dict) -> None:
+    log_path = os.getenv("PROGRESS_LOG")
+    if not log_path:
+        return
+    record = {"event": event, **payload}
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        return
+
+
 def _redact_request_url(request: requests.PreparedRequest | None) -> str:
     if not request or not request.url:
         return "request_url_unavailable"
@@ -130,6 +178,15 @@ def _redact_request_url(request: requests.PreparedRequest | None) -> str:
             query.append((key, value))
     redacted_query = urlencode(query)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, redacted_query, parts.fragment))
+
+
+def _response_excerpt(response: requests.Response | None) -> str:
+    if response is None:
+        return "response_unavailable"
+    text = (response.text or "").strip().replace("\n", " ")
+    if not text:
+        return "empty_response"
+    return text[:300]
 
 
 def _extract_reviewer(review: dict) -> tuple[str, str]:

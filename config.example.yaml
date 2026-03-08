@@ -7,12 +7,6 @@ app:
   max_places_per_run: 40
   allow_repeat_suggestions: false
   locale: en
-  enable_screenshots: false
-  screenshot_dir: out/screenshots
-  screenshot_timeout_ms: 15000
-  screenshot_max_per_run: 10
-  screenshot_debug: false
-  screenshot_mode: rendered
 
 discovery:
   provider: serpapi_maps
@@ -20,6 +14,7 @@ discovery:
   regions:
     - "New York, NY"
     - "Los Angeles, CA"
+  name_contains: ""
   categories:
     - restaurant
     - hotel

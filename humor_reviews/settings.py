@@ -17,12 +17,6 @@ class AppSettings:
     max_places_per_run: int
     allow_repeat_suggestions: bool
     locale: str
-    enable_screenshots: bool
-    screenshot_dir: Path
-    screenshot_timeout_ms: int
-    screenshot_max_per_run: int
-    screenshot_debug: bool
-    screenshot_mode: str
 
 
 @dataclass
@@ -31,6 +25,7 @@ class DiscoverySettings:
     country: str
     regions: List[str]
     categories: List[str]
+    name_contains: str
     min_total_reviews: int
     require_recent_days: int
 
@@ -104,12 +99,6 @@ def load_settings(path: str | Path = "config.yaml") -> Settings:
         max_places_per_run=int(app_raw.get("max_places_per_run", 40)),
         allow_repeat_suggestions=bool(app_raw.get("allow_repeat_suggestions", False)),
         locale=str(app_raw.get("locale", "en")),
-        enable_screenshots=bool(app_raw.get("enable_screenshots", False)),
-        screenshot_dir=Path(app_raw.get("screenshot_dir", "out/screenshots")),
-        screenshot_timeout_ms=int(app_raw.get("screenshot_timeout_ms", 15000)),
-        screenshot_max_per_run=int(app_raw.get("screenshot_max_per_run", 10)),
-        screenshot_debug=bool(app_raw.get("screenshot_debug", False)),
-        screenshot_mode=str(app_raw.get("screenshot_mode", "rendered")),
     )
 
     discovery = DiscoverySettings(
@@ -117,6 +106,7 @@ def load_settings(path: str | Path = "config.yaml") -> Settings:
         country=str(discovery_raw.get("country", "US")),
         regions=list(discovery_raw.get("regions", [])),
         categories=list(discovery_raw.get("categories", [])),
+        name_contains=str(discovery_raw.get("name_contains", "")).strip(),
         min_total_reviews=int(discovery_raw.get("min_total_reviews", 100)),
         require_recent_days=int(discovery_raw.get("require_recent_days", 120)),
     )

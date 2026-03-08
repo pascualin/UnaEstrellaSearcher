@@ -37,6 +37,10 @@
                   <option value="humor_score">Humor score</option>
                   <option value="updated_at">Última actualización</option>
                 </select>
+                <label class="toggle compact-toggle" for="show-reviewed">
+                  <input id="show-reviewed" type="checkbox" />
+                  <span>Mostrar revisadas</span>
+                </label>
               </div>
             </div>
             <div class="db-summary" id="db-summary"></div>
@@ -52,6 +56,7 @@
   <script>
     const byId = (id) => document.getElementById(id);
     const reviewSort = byId("review-sort");
+    const showReviewed = byId("show-reviewed");
 
     function renderReviews(container, rows) {
       if (!rows || rows.length === 0) {
@@ -75,7 +80,7 @@
     }
 
     async function loadDb() {
-      const res = await fetch(`/api/db-data?sort=${encodeURIComponent(reviewSort.value)}`);
+      const res = await fetch(`/api/db-data?sort=${encodeURIComponent(reviewSort.value)}&show_reviewed=${showReviewed.checked ? "1" : "0"}`);
       if (!res.ok) {
         byId("db-summary").innerHTML = "<div class='hint'>No se pudo cargar la base de datos.</div>";
         return;
@@ -84,6 +89,8 @@
       const summary = payload.summary || {};
       byId("db-summary").innerHTML = [
         `<div class=\"db-summary-card\"><div class=\"label\">Reseñas</div><div class=\"value\">${summary.reviews || 0}</div></div>`,
+        `<div class=\"db-summary-card\"><div class=\"label\">Pendientes</div><div class=\"value\">${summary.pending_review || 0}</div></div>`,
+        `<div class=\"db-summary-card\"><div class=\"label\">Revisadas</div><div class=\"value\">${summary.reviewed || 0}</div></div>`,
         `<div class=\"db-summary-card\"><div class=\"label\">Reseñas vacías (última)</div><div class=\"value\">${summary.empty_reviews_skipped_last || 0}</div></div>`,
         `<div class=\"db-summary-card\"><div class=\"label\">Reseñas vacías (total)</div><div class=\"value\">${summary.empty_reviews_skipped_total || 0}</div></div>`,
       ].join("");
@@ -101,6 +108,7 @@
 
     byId("db-refresh").addEventListener("click", loadDb);
     reviewSort.addEventListener("change", loadDb);
+    showReviewed.addEventListener("change", loadDb);
     loadDb();
   </script>
 </body>

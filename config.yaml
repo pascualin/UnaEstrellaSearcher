@@ -3,34 +3,18 @@ app:
   data_dir: data
   weekly_target_count: 20
   humor_threshold: 0
-  max_reviews_per_place: 5
-  max_places_per_run: 30
+  max_reviews_per_place: 3
+  max_places_per_run: 1
   allow_repeat_suggestions: false
   locale: es
-  enable_screenshots: false
-  screenshot_dir: out/screenshots
-  screenshot_timeout_ms: 15000
-  screenshot_max_per_run: 10
-  screenshot_mode: rendered
-  screenshot_debug: true
 discovery:
   provider: serpapi_maps
   country: ES
-  regions:
-  - Zaragoza, Spain
-  categories:
-  - Restaurantes turísticos
-  - Bares de barrio
-  - Parkings
-  - Talleres mecánicos
-  - low-cost
-  - Peluquerías y barberías
-  - Atracciones turísticas
-  - Clínicas dentales
-  - Autoescuelas
-  - Funerarias
-  min_total_reviews: 250
-  require_recent_days: 190
+  regions: []
+  name_contains: padre
+  categories: []
+  min_total_reviews: 10
+  require_recent_days: 3650
 providers:
   serpapi:
     api_key_env: SERPAPI_API_KEY

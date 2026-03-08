@@ -120,6 +120,8 @@ class Storage:
             conn.execute("ALTER TABLE reviews ADD COLUMN reviewer_profile_url TEXT")
         if "summary" not in columns:
             conn.execute("ALTER TABLE reviews ADD COLUMN summary TEXT")
+        if "reviewed" not in columns:
+            conn.execute("ALTER TABLE reviews ADD COLUMN reviewed INTEGER DEFAULT 0")
 
     def upsert_place(self, place: Place) -> None:
         with sqlite3.connect(self.db_path) as conn:
@@ -222,6 +224,16 @@ class Storage:
                 UPDATE reviews SET status=?, updated_at=? WHERE review_id=?
                 """,
                 (status, now, review_id),
+            )
+
+    def update_reviewed(self, review_id: str, reviewed: bool) -> None:
+        now = datetime.utcnow().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE reviews SET reviewed=?, updated_at=? WHERE review_id=?
+                """,
+                (1 if reviewed else 0, now, review_id),
             )
 
     def record_stat(self, event: str, count: int) -> None:

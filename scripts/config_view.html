@@ -19,7 +19,6 @@
         <button class="secondary" id="reload">Recargar</button>
         <button class="secondary" id="run-weekly">Run Weekly</button>
         <button class="secondary" id="run-dry">Run Dry-Run</button>
-        <button class="secondary" id="open-latest">Abrir último HTML</button>
         <div class="banner" id="status"></div>
       </div>
     </aside>
@@ -59,18 +58,16 @@
                 <input id="allow_repeat_suggestions" type="checkbox" />
                 <label for="allow_repeat_suggestions">Allow repeat suggestions</label>
               </div>
-              <div class="toggle">
-                <input id="enable_screenshots" type="checkbox" />
-                <label for="enable_screenshots">Enable screenshots</label>
-              </div>
             </div>
 
             <div class="card">
               <h2>Discovery</h2>
               <label>Country</label>
               <input id="country" type="text" />
-              <label>Regions (una por línea)</label>
+              <label>Regions (una por línea, opcional)</label>
               <textarea id="regions"></textarea>
+              <label>Name contains</label>
+              <input id="name_contains" type="text" />
               <label>Categories (una por línea)</label>
               <textarea id="categories"></textarea>
               <div class="row">
@@ -104,41 +101,49 @@
             </div>
 
             <div class="card">
-              <h2>Screenshots</h2>
-              <div class="row">
-                <div>
-                  <label>Timeout (ms)</label>
-                  <input id="screenshot_timeout_ms" type="number" min="1000" step="1000" />
-                </div>
-                <div>
-                  <label>Max per run</label>
-                  <input id="screenshot_max_per_run" type="number" min="1" />
-                </div>
-              </div>
-              <label>Mode</label>
-              <select id="screenshot_mode">
-                <option value="rendered">rendered</option>
-                <option value="live">live</option>
-              </select>
-              <div class="toggle">
-                <input id="screenshot_debug" type="checkbox" />
-                <label for="screenshot_debug">Screenshot debug</label>
-              </div>
-            </div>
-
-            <div class="card">
               <h2>Curation</h2>
               <label>Theme limits (formato: tag=valor por línea)</label>
               <textarea id="theme_limits"></textarea>
+            </div>
+            <div class="card">
+              <h2>Ejecución en vivo</h2>
+              <p class="hint">Seguimiento en tiempo real mientras se ejecuta el weekly.</p>
+              <div class="meta meta-stack">
+                <span><strong>Sitios encontrados:</strong> <span id="live-sites">0</span></span>
+                <span><strong>Sitio actual:</strong> <span id="live-place">-</span></span>
+                <span><strong>Reseñas encontradas:</strong> <span id="live-count">0</span></span>
+              </div>
+              <div class="review-text">
+                <div class="label">Puntuaciones</div>
+                <div class="block" id="live-scores">-</div>
+              </div>
             </div>
           </div>
         </section>
       </main>
     </div>
   </div>
+  <div class="modal" id="no-results-modal" aria-hidden="true">
+    <div class="modal-card">
+      <h2>Sin resultados</h2>
+      <p class="hint" id="no-results-text">No se encontraron resultados para esa búsqueda.</p>
+      <div class="actions">
+        <button class="secondary" id="no-results-close">Cerrar</button>
+      </div>
+    </div>
+  </div>
   <script>
     const byId = (id) => document.getElementById(id);
     const status = byId("status");
+    const liveSites = byId("live-sites");
+    const livePlace = byId("live-place");
+    const liveCount = byId("live-count");
+    const liveScores = byId("live-scores");
+    let progressOffset = 0;
+    let progressTimer = null;
+    let runFinished = false;
+    const noResultsModal = byId("no-results-modal");
+    const noResultsText = byId("no-results-text");
 
     function listToText(list) {
       return (list || []).join("\n");
@@ -176,10 +181,10 @@
       byId("max_places_per_run").value = cfg.app.max_places_per_run || 0;
       byId("locale").value = cfg.app.locale || "en";
       byId("allow_repeat_suggestions").checked = !!cfg.app.allow_repeat_suggestions;
-      byId("enable_screenshots").checked = !!cfg.app.enable_screenshots;
 
       byId("country").value = cfg.discovery.country || "";
       byId("regions").value = listToText(cfg.discovery.regions);
+      byId("name_contains").value = cfg.discovery.name_contains || "";
       byId("categories").value = listToText(cfg.discovery.categories);
       byId("min_total_reviews").value = cfg.discovery.min_total_reviews || 0;
       byId("require_recent_days").value = cfg.discovery.require_recent_days || 0;
@@ -188,11 +193,6 @@
       byId("temperature").value = cfg.scoring.temperature || 0;
       byId("max_output_tokens").value = cfg.scoring.max_output_tokens || 0;
       byId("prompt").value = cfg.scoring.prompt || "";
-
-      byId("screenshot_timeout_ms").value = cfg.app.screenshot_timeout_ms || 0;
-      byId("screenshot_max_per_run").value = cfg.app.screenshot_max_per_run || 0;
-      byId("screenshot_mode").value = cfg.app.screenshot_mode || "rendered";
-      byId("screenshot_debug").checked = !!cfg.app.screenshot_debug;
 
       byId("theme_limits").value = themeLimitsToText(cfg.curation.theme_limits);
       status.textContent = "";
@@ -209,17 +209,12 @@
           max_places_per_run: Number(byId("max_places_per_run").value),
           allow_repeat_suggestions: byId("allow_repeat_suggestions").checked,
           locale: byId("locale").value.trim(),
-          enable_screenshots: byId("enable_screenshots").checked,
-          screenshot_dir: "out/screenshots",
-          screenshot_timeout_ms: Number(byId("screenshot_timeout_ms").value),
-          screenshot_max_per_run: Number(byId("screenshot_max_per_run").value),
-          screenshot_mode: byId("screenshot_mode").value,
-          screenshot_debug: byId("screenshot_debug").checked,
         },
         discovery: {
           provider: "serpapi_maps",
           country: byId("country").value.trim(),
           regions: textToList(byId("regions").value),
+          name_contains: byId("name_contains").value.trim(),
           categories: textToList(byId("categories").value),
           min_total_reviews: Number(byId("min_total_reviews").value),
           require_recent_days: Number(byId("require_recent_days").value),
@@ -262,9 +257,20 @@
 
     async function runWeekly() {
       status.textContent = "Ejecutando pipeline...";
+      runFinished = false;
+      liveSites.textContent = "0";
+      livePlace.textContent = "-";
+      liveCount.textContent = "0";
+      liveScores.textContent = "-";
+      status.classList.add("banner");
+      progressOffset = 0;
       const res = await fetch("/api/run-weekly", { method: "POST" });
-      const text = await res.text();
-      status.textContent = text;
+      if (!res.ok) {
+        status.textContent = "Error al iniciar el run.";
+        return;
+      }
+      if (progressTimer) clearInterval(progressTimer);
+      progressTimer = setInterval(pollProgress, 1200);
     }
 
     async function runDryRun() {
@@ -274,15 +280,82 @@
       status.textContent = text;
     }
 
-    function openLatest() {
-      window.open("/latest-html", "_blank");
+    function showNoResults(message) {
+      noResultsText.textContent = message;
+      noResultsModal.classList.add("is-open");
+      noResultsModal.setAttribute("aria-hidden", "false");
+    }
+
+    function closeNoResults() {
+      noResultsModal.classList.remove("is-open");
+      noResultsModal.setAttribute("aria-hidden", "true");
+    }
+
+    async function pollProgress() {
+      const res = await fetch(`/api/progress?offset=${progressOffset}`);
+      if (!res.ok) return;
+      const payload = await res.json();
+      progressOffset = payload.next_offset || progressOffset;
+      (payload.lines || []).forEach((line) => {
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch (err) {
+          return;
+        }
+        if (event.event === "sites_found") {
+          liveSites.textContent = event.count ?? liveSites.textContent;
+        }
+        if (event.event === "place_start") {
+          livePlace.textContent = event.place_name || event.place_id || "-";
+          liveCount.textContent = "0";
+          liveScores.textContent = "-";
+        }
+        if (event.event === "place_done") {
+          liveCount.textContent = event.review_count ?? "0";
+          if (Array.isArray(event.scores) && event.scores.length) {
+            liveScores.textContent = event.scores.join(", ");
+          } else {
+            liveScores.textContent = "-";
+          }
+        }
+        if (event.event === "run_complete") {
+          runFinished = true;
+          status.textContent = `Finalizado. Sitios: ${event.discovered}, reseñas: ${event.collected}`;
+          if (progressTimer) clearInterval(progressTimer);
+        }
+        if (event.event === "run_started") {
+          runFinished = false;
+          status.textContent = "Ejecutando pipeline...";
+        }
+        if (event.event === "run_failed") {
+          runFinished = true;
+          status.textContent = "Falló la ejecución. Revisa el log.";
+          if (progressTimer) clearInterval(progressTimer);
+        }
+        if (event.event === "process_output" && event.stream === "stderr") {
+          const text = String(event.text || "");
+          const isBenignWarning = text.includes("NotOpenSSLWarning");
+          if (!runFinished && !isBenignWarning) {
+            status.textContent = "Aviso durante la ejecución. Revisa el log.";
+          }
+        }
+        if (event.event === "no_results") {
+          const region = event.region || "la región";
+          const category = event.category || "la categoría";
+          showNoResults(`No se encontraron resultados para \"${category}\" en ${region}. Revisa categorías o región.`);
+        }
+      });
     }
 
     byId("save").addEventListener("click", saveConfig);
     byId("reload").addEventListener("click", loadConfig);
     byId("run-weekly").addEventListener("click", runWeekly);
     byId("run-dry").addEventListener("click", runDryRun);
-    byId("open-latest").addEventListener("click", openLatest);
+    byId("no-results-close").addEventListener("click", closeNoResults);
+    noResultsModal.addEventListener("click", (event) => {
+      if (event.target === noResultsModal) closeNoResults();
+    });
 
     loadConfig();
   </script>
