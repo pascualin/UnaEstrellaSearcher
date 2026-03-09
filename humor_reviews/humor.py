@@ -70,9 +70,9 @@ def score_review(
                 },
             },
             temperature=settings.temperature,
-            max_tokens=settings.max_output_tokens,
+            max_completion_tokens=max(settings.max_output_tokens, 320),
         )
-        content = response.choices[0].message.content or ""
+        content = _extract_message_content(response)
         payload = _parse_payload(content)
         return HumorResult(
             score=_clamp_score(payload.get("score", 0)),
@@ -90,6 +90,51 @@ def score_review(
         )
 
 
+def _extract_message_content(response: Any) -> str:
+    choice = response.choices[0]
+    finish_reason = getattr(choice, "finish_reason", None)
+    if finish_reason == "length":
+        raise RuntimeError(
+            "Humor response was truncated by the model token limit. "
+            "Increase max_output_tokens for scoring."
+        )
+    message = choice.message
+    content = getattr(message, "content", "") or ""
+    if isinstance(content, str) and content.strip():
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text)
+            else:
+                text = getattr(item, "text", None)
+                if isinstance(text, str) and text.strip():
+                    parts.append(text)
+        if parts:
+            return "\n".join(parts)
+    parsed = getattr(message, "parsed", None)
+    if parsed:
+        try:
+            return json.dumps(parsed)
+        except TypeError:
+            if hasattr(parsed, "model_dump"):
+                return json.dumps(parsed.model_dump())
+    refusal = getattr(message, "refusal", None)
+    if refusal:
+        return json.dumps({"notes": f"Model refusal: {refusal}", "score": 0, "tags": ["refusal"], "summary": ""})
+    dumped = _response_to_mapping(response)
+    content = _find_text_in_mapping(dumped)
+    if content:
+        return content
+    raise RuntimeError(
+        "Humor response could not be parsed from OpenAI output. "
+        f"Response keys: {sorted(dumped.keys())}"
+    )
+
+
 def _parse_payload(content: str) -> Dict[str, Any]:
     content = content.strip()
     try:
@@ -97,7 +142,11 @@ def _parse_payload(content: str) -> Dict[str, Any]:
         if isinstance(payload, dict):
             return payload
     except json.JSONDecodeError:
-        pass
+        extracted = _extract_json_object(content)
+        if extracted:
+            payload = json.loads(extracted)
+            if isinstance(payload, dict):
+                return payload
 
     match = re.search(r"\b(\d{1,3})\b", content)
     if match:
@@ -131,3 +180,59 @@ def _redact_secrets(message: str, secrets: list[str | None]) -> str:
         if secret:
             redacted = redacted.replace(secret, "REDACTED")
     return redacted
+
+
+def _response_to_mapping(response: Any) -> dict[str, Any]:
+    if hasattr(response, "model_dump"):
+        dumped = response.model_dump()
+        if isinstance(dumped, dict):
+            return dumped
+    if isinstance(response, dict):
+        return response
+    return {"repr": repr(response)}
+
+
+def _find_text_in_mapping(value: Any) -> str:
+    if isinstance(value, str) and value.strip():
+        extracted = _extract_json_object(value)
+        if extracted:
+            return extracted
+        return ""
+    if isinstance(value, list):
+        for item in value:
+            found = _find_text_in_mapping(item)
+            if found:
+                return found
+        return ""
+    if isinstance(value, dict):
+        for key in ("content", "text", "parsed"):
+            if key in value:
+                found = _find_text_in_mapping(value[key])
+                if found:
+                    return found
+        for item in value.values():
+            found = _find_text_in_mapping(item)
+            if found:
+                return found
+    return ""
+
+
+def _extract_json_object(value: str) -> str:
+    stripped = value.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        return stripped
+
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", value, flags=re.DOTALL)
+    if fenced:
+        return fenced.group(1).strip()
+
+    start = value.find("{")
+    end = value.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = value[start : end + 1].strip()
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            return ""
+    return ""

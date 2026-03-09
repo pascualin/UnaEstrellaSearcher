@@ -9,76 +9,93 @@
 <body>
   <div class="layout">
     <aside>
-      <div class="brand">Config Studio</div>
+      <div class="brand">Panel de configuración</div>
       <nav>
         <a class="nav-item" href="/db">Volver a Base de datos</a>
         <a class="nav-item" href="/config">Configuración</a>
       </nav>
     </aside>
     <div class="content">
-      <header>
-        <h1>Detalle de reseña</h1>
-        <p>{{place_line}}</p>
-      </header>
       <main>
-        <div class="detail-layout">
-          <div class="card detail-primary">
-            <h2>Reseña</h2>
+        <div class="gm-shell">
+          <section class="gm-place-card">
+            <div class="gm-place-copy">
+              <h1>{{place_name}}</h1>
+              <p class="gm-place-type">{{place_category}}</p>
+              <p class="gm-place-address">{{place_address}}</p>
+              <div class="gm-place-links">{{maps_link}}</div>
+            </div>
+            <div class="gm-place-avatar">{{place_avatar}}</div>
+          </section>
+
+          <section class="gm-review-card">
+            <div class="gm-review-notice">No se verificaron las opiniones</div>
+
             {{summary_html}}
-            <div class="review-text">
-              <div class="block">{{review_text}}</div>
+
+            <div class="gm-review-author-row">
+              <div class="gm-reviewer-avatar">{{reviewer_avatar}}</div>
+              <div class="gm-reviewer-meta">
+                <div class="gm-reviewer-name">{{reviewer_html}}</div>
+              </div>
             </div>
+
+            <div class="gm-rating-row">
+              <div class="gm-stars">{{rating_stars}}</div>
+              <div class="gm-rating-date">{{date}}</div>
+            </div>
+
+            <div class="gm-review-text">{{review_text}}</div>
+
             {{owner_reply_html}}
-          </div>
-          <div class="detail-side">
-            <div class="card">
-              <h2>Resumen</h2>
-              <p class="hint">Puntuación y señales principales</p>
-              <div class="meta meta-stack">
-                <span><strong>Humor:</strong> {{humor_score}}</span>
-                <span><strong>Safety:</strong> {{safety_label}} ({{safety_notes}})</span>
-                <span><strong>Tags:</strong> {{tags}}</span>
+          </section>
+
+          <section class="gm-meta-grid">
+            <div class="gm-meta-card">
+              <h2>Resumen editorial</h2>
+              <div class="gm-kv-list">
+                <div><strong>Humor:</strong> {{humor_score}}</div>
+                <div><strong>Seguridad:</strong> {{safety_label}} ({{safety_notes}})</div>
+                <div class="gm-kv-line"><strong>Etiquetas:</strong> <span class="gm-ellipsis" title="{{tags_title}}">{{tags}}</span></div>
               </div>
-              <div class="review-text">
-                <div class="label">Nota</div>
-                <div class="block">{{humor_notes}}</div>
-              </div>
+              <div class="gm-note-box">{{humor_notes}}</div>
             </div>
-            <div class="card">
-              <h2>Datos</h2>
-              <div class="meta meta-stack">
-                <span><strong>Fecha:</strong> {{date}}</span>
-                <span><strong>Rating:</strong> {{rating}} estrellas</span>
-                <span><strong>Status:</strong> {{status}}</span>
-                <span><strong>Revisión:</strong> <span id="reviewed-label">{{reviewed_label}}</span></span>
-                <span><strong>Reviewer:</strong> {{reviewer_html}}</span>
-                <span><strong>Actualizado:</strong> {{updated_at}}</span>
+
+            <div class="gm-meta-card">
+              <h2>Datos internos</h2>
+              <div class="gm-kv-list">
+                <div><strong>Estado:</strong> {{status}}</div>
+                <div><strong>Revisión:</strong> <span id="reviewed-label">{{reviewed_label}}</span></div>
+                <div><strong>Selección:</strong> <span id="selected-label">{{selected_label}}</span></div>
+                <div><strong>Actualizado:</strong> {{updated_at}}</div>
               </div>
-              <div class="actions">
+              <div class="actions gm-actions">
                 <button class="secondary" id="reviewed-toggle" data-review-id="{{review_id}}" data-reviewed="{{reviewed}}">{{reviewed_button}}</button>
+                <button class="secondary" id="selected-toggle" data-review-id="{{review_id}}" data-selected="{{selected}}">{{selected_button}}</button>
               </div>
               <div class="hint" id="reviewed-feedback"></div>
-              <div class="links">
-                {{maps_link}}
-              </div>
+              <div class="hint" id="selected-feedback"></div>
             </div>
-          </div>
+          </section>
         </div>
       </main>
     </div>
   </div>
   <script>
-    const toggle = document.getElementById("reviewed-toggle");
-    const label = document.getElementById("reviewed-label");
-    const feedback = document.getElementById("reviewed-feedback");
+    const reviewedToggle = document.getElementById("reviewed-toggle");
+    const reviewedLabel = document.getElementById("reviewed-label");
+    const reviewedFeedback = document.getElementById("reviewed-feedback");
+    const selectedToggle = document.getElementById("selected-toggle");
+    const selectedLabel = document.getElementById("selected-label");
+    const selectedFeedback = document.getElementById("selected-feedback");
 
     async function toggleReviewed() {
-      if (!toggle) return;
-      const reviewId = toggle.dataset.reviewId || "";
-      const current = toggle.dataset.reviewed === "true";
+      if (!reviewedToggle) return;
+      const reviewId = reviewedToggle.dataset.reviewId || "";
+      const current = reviewedToggle.dataset.reviewed === "true";
       const next = !current;
-      toggle.disabled = true;
-      if (feedback) feedback.textContent = "";
+      reviewedToggle.disabled = true;
+      if (reviewedFeedback) reviewedFeedback.textContent = "";
       try {
         const res = await fetch("/api/review-reviewed", {
           method: "POST",
@@ -86,22 +103,53 @@
           body: JSON.stringify({ review_id: reviewId, reviewed: next }),
         });
         if (!res.ok) {
-          if (feedback) feedback.textContent = "No se pudo guardar el cambio. Reinicia el servidor de la UI y prueba de nuevo.";
+          if (reviewedFeedback) reviewedFeedback.textContent = "No se pudo guardar el cambio. Reinicia el servidor de la UI y prueba de nuevo.";
           return;
         }
-        toggle.dataset.reviewed = next ? "true" : "false";
-        label.textContent = next ? "Revisada" : "Pendiente de revisar";
-        toggle.textContent = next ? "Quitar marca de revisada" : "Marcar como revisada";
-        if (feedback) feedback.textContent = "Estado actualizado.";
+        reviewedToggle.dataset.reviewed = next ? "true" : "false";
+        reviewedLabel.textContent = next ? "Revisada" : "Pendiente de revisar";
+        reviewedToggle.textContent = next ? "Quitar marca de revisada" : "Marcar como revisada";
+        if (reviewedFeedback) reviewedFeedback.textContent = "Estado de revisión actualizado.";
       } catch (error) {
-        if (feedback) feedback.textContent = "No se pudo conectar con la UI local.";
+        if (reviewedFeedback) reviewedFeedback.textContent = "No se pudo conectar con la UI local.";
       } finally {
-        toggle.disabled = false;
+        reviewedToggle.disabled = false;
       }
     }
 
-    if (toggle) {
-      toggle.addEventListener("click", toggleReviewed);
+    async function toggleSelected() {
+      if (!selectedToggle) return;
+      const reviewId = selectedToggle.dataset.reviewId || "";
+      const current = selectedToggle.dataset.selected === "true";
+      const next = !current;
+      selectedToggle.disabled = true;
+      if (selectedFeedback) selectedFeedback.textContent = "";
+      try {
+        const res = await fetch("/api/review-selected", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ review_id: reviewId, selected: next }),
+        });
+        if (!res.ok) {
+          if (selectedFeedback) selectedFeedback.textContent = "No se pudo guardar la selección. Reinicia el servidor de la UI y prueba de nuevo.";
+          return;
+        }
+        selectedToggle.dataset.selected = next ? "true" : "false";
+        selectedLabel.textContent = next ? "Seleccionada" : "No seleccionada";
+        selectedToggle.textContent = next ? "Quitar selección" : "Marcar como seleccionada";
+        if (selectedFeedback) selectedFeedback.textContent = "Selección actualizada.";
+      } catch (error) {
+        if (selectedFeedback) selectedFeedback.textContent = "No se pudo conectar con la UI local.";
+      } finally {
+        selectedToggle.disabled = false;
+      }
+    }
+
+    if (reviewedToggle) {
+      reviewedToggle.addEventListener("click", toggleReviewed);
+    }
+    if (selectedToggle) {
+      selectedToggle.addEventListener("click", toggleSelected);
     }
   </script>
 </body>

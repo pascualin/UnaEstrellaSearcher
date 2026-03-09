@@ -3,16 +3,24 @@ app:
   data_dir: data
   weekly_target_count: 20
   humor_threshold: 0
-  max_reviews_per_place: 3
-  max_places_per_run: 1
+  max_reviews_per_place: 20
+  max_places_per_run: 55
   allow_repeat_suggestions: false
   locale: es
 discovery:
   provider: serpapi_maps
   country: ES
-  regions: []
-  name_contains: padre
-  categories: []
+  regions:
+  - Madrid, Spain
+  - Barcelona, Spain
+  - Valencia, Spain
+  - Sevilla, Spain
+  - Málaga, Spain
+  name_contains: ''
+  categories:
+  - restaurantes
+  - hoteles
+  - tiendas
   min_total_reviews: 10
   require_recent_days: 3650
 providers:
@@ -22,10 +30,10 @@ providers:
     gl: es
 scoring:
   provider: openai
-  model: gpt-4o-mini
+  model: gpt-5.2
   api_key_env: OPENAI_API_KEY
   temperature: 0.2
-  max_output_tokens: 20
+  max_output_tokens: 320
   prompt: "Evalúa UNA única reseña y determina cuán graciosa es.\n\nDevuelve EXCLUSIVAMENTE\
     \ un JSON válido, sin texto adicional.\n\nObjetivo\n\nAsignar una puntuación de\
     \ humor de 0 a 100, donde:\n\t•\t0 = nada gracioso\n\t•\t100 = extremadamente\

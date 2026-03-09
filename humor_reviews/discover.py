@@ -21,6 +21,13 @@ class DiscoveredPlace:
     place: Place
 
 
+@dataclass
+class SearchQuery:
+    query: str
+    region: str = ""
+    category: str = ""
+
+
 def _serpapi_maps_search(
     query: str,
     api_key: str,
@@ -237,6 +244,59 @@ def discover_places(
             time.sleep(1.2)
 
 
+def discover_places_for_queries(
+    queries: list[SearchQuery],
+    discovery: DiscoverySettings,
+    providers: ProviderSettings,
+    cache_dir: Path,
+) -> Iterable[DiscoveredPlace]:
+    api_key = os.getenv(providers.serpapi_api_key_env)
+    if not api_key:
+        raise RuntimeError(
+            f"Missing API key env var {providers.serpapi_api_key_env}."
+        )
+
+    min_recent_date = datetime.utcnow() - timedelta(days=discovery.require_recent_days)
+    for item in queries:
+        try:
+            results, _ = _serpapi_maps_search(
+                query=item.query,
+                api_key=api_key,
+                hl=providers.serpapi_hl,
+                gl=providers.serpapi_gl,
+                cache_dir=cache_dir,
+                no_cache=False,
+                location=item.region or None,
+            )
+        except Exception as exc:
+            _emit_discovery_progress(
+                "search_failed",
+                {
+                    "region": item.region or "global",
+                    "category": item.category,
+                    "query": item.query,
+                    "error": str(exc),
+                },
+            )
+            continue
+
+        _emit_discovery_progress(
+            "search_query",
+            {
+                "region": item.region or "global",
+                "category": item.category,
+                "query": item.query,
+                "raw_results": len(results),
+            },
+        )
+        for place_raw in results:
+            place = _build_place(place_raw, item.category, min_recent_date.date(), discovery.min_total_reviews)
+            if place is None:
+                continue
+            yield DiscoveredPlace(place=place)
+        time.sleep(1.2)
+
+
 def _parse_iso_date(value: str) -> datetime.date | None:
     try:
         return datetime.fromisoformat(value).date()
@@ -253,6 +313,42 @@ def _build_query(category: str, name_contains: str, region: str) -> str:
     if tokens:
         return f"{' '.join(tokens)} in {region}" if region else " ".join(tokens)
     return region or ""
+
+
+def _build_place(
+    place_raw: dict,
+    category: str,
+    min_recent_date: datetime.date,
+    min_total_reviews: int,
+) -> Place | None:
+    place_id = str(place_raw.get("place_id") or "")
+    data_id = str(place_raw.get("data_id") or "")
+    if not place_id and not data_id:
+        return None
+
+    total_reviews = int(place_raw.get("reviews") or 0)
+    if total_reviews < min_total_reviews:
+        return None
+
+    last_review_date = None
+    last_seen = place_raw.get("reviewed_at") or place_raw.get("last_review_date")
+    if last_seen:
+        last_review_date = str(last_seen)
+        parsed = _parse_iso_date(last_review_date)
+        if parsed and parsed < min_recent_date:
+            return None
+
+    return Place(
+        place_id=place_id or data_id,
+        data_id=data_id,
+        name=place_raw.get("title") or place_raw.get("name") or "Unknown",
+        address=place_raw.get("address") or place_raw.get("formatted_address") or "",
+        category=category,
+        total_reviews=total_reviews,
+        last_review_date=last_review_date,
+        provider="serpapi",
+        place_url=_build_place_url(place_raw),
+    )
 
 
 def _category_aliases(category: str) -> list[str]:

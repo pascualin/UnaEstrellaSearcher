@@ -32,10 +32,10 @@ providers:
 
 scoring:
   provider: openai
-  model: gpt-4o-mini
+  model: gpt-5.2
   api_key_env: OPENAI_API_KEY
   temperature: 0.2
-  max_output_tokens: 20
+  max_output_tokens: 320
   prompt: |
     Evalua UNA resena individual y devuelve SOLO una puntuacion de humor.
     Devuelve un entero de 0 a 100 donde 0 es nada gracioso y 100 es muy gracioso.

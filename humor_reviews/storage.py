@@ -104,6 +104,24 @@ class Storage:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS celebration_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    year INTEGER,
+                    month INTEGER,
+                    day INTEGER,
+                    target_funny_reviews INTEGER,
+                    humor_threshold INTEGER,
+                    observances_json TEXT,
+                    strategy_json TEXT,
+                    discovered_count INTEGER,
+                    collected_count INTEGER,
+                    funny_count INTEGER,
+                    created_at TEXT
+                )
+                """
+            )
             self._ensure_place_columns(conn)
             self._ensure_review_columns(conn)
 
@@ -122,6 +140,8 @@ class Storage:
             conn.execute("ALTER TABLE reviews ADD COLUMN summary TEXT")
         if "reviewed" not in columns:
             conn.execute("ALTER TABLE reviews ADD COLUMN reviewed INTEGER DEFAULT 0")
+        if "selected" not in columns:
+            conn.execute("ALTER TABLE reviews ADD COLUMN selected INTEGER DEFAULT 0")
 
     def upsert_place(self, place: Place) -> None:
         with sqlite3.connect(self.db_path) as conn:
@@ -236,6 +256,16 @@ class Storage:
                 (1 if reviewed else 0, now, review_id),
             )
 
+    def update_selected(self, review_id: str, selected: bool) -> None:
+        now = datetime.utcnow().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE reviews SET selected=?, updated_at=? WHERE review_id=?
+                """,
+                (1 if selected else 0, now, review_id),
+            )
+
     def record_stat(self, event: str, count: int) -> None:
         now = datetime.utcnow().isoformat()
         with sqlite3.connect(self.db_path) as conn:
@@ -245,6 +275,45 @@ class Storage:
                 VALUES (?, ?, ?)
                 """,
                 (event, count, now),
+            )
+
+    def record_celebration_run(
+        self,
+        year: int | None,
+        month: int | None,
+        day: int | None,
+        target_funny_reviews: int,
+        humor_threshold: int,
+        observances_json: str,
+        strategy_json: str,
+        discovered_count: int,
+        collected_count: int,
+        funny_count: int,
+    ) -> None:
+        now = datetime.utcnow().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO celebration_runs (
+                    year, month, day, target_funny_reviews, humor_threshold,
+                    observances_json, strategy_json, discovered_count, collected_count,
+                    funny_count, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    year,
+                    month,
+                    day,
+                    target_funny_reviews,
+                    humor_threshold,
+                    observances_json,
+                    strategy_json,
+                    discovered_count,
+                    collected_count,
+                    funny_count,
+                    now,
+                ),
             )
 
     def fetch_candidates(self, humor_threshold: int, allow_repeat: bool) -> list[Review]:
@@ -270,6 +339,74 @@ class Storage:
                     """,
                     (humor_threshold,),
                 ).fetchall()
+
+        return [
+            Review(
+                review_id=row["review_id"],
+                place_id=row["place_id"],
+                rating=row["rating"],
+                date=row["date"],
+                reviewer_name=row["reviewer_name"],
+                reviewer_profile_url=row["reviewer_profile_url"] or "",
+                text=row["text"],
+                summary=row["summary"] or "",
+                owner_reply=row["owner_reply"],
+                review_url=row["review_url"],
+                humor_score=row["humor_score"],
+                humor_notes=row["humor_notes"],
+                safety_label=row["safety_label"],
+                safety_notes=row["safety_notes"],
+                tags=row["tags"],
+            )
+            for row in rows
+        ]
+
+    def fetch_reviews_with_tag(self, tag: str) -> list[Review]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT * FROM reviews
+                WHERE tags LIKE ?
+                ORDER BY updated_at DESC
+                """,
+                (f"%{tag}%",),
+            ).fetchall()
+
+        return [
+            Review(
+                review_id=row["review_id"],
+                place_id=row["place_id"],
+                rating=row["rating"],
+                date=row["date"],
+                reviewer_name=row["reviewer_name"],
+                reviewer_profile_url=row["reviewer_profile_url"] or "",
+                text=row["text"],
+                summary=row["summary"] or "",
+                owner_reply=row["owner_reply"],
+                review_url=row["review_url"],
+                humor_score=row["humor_score"],
+                humor_notes=row["humor_notes"],
+                safety_label=row["safety_label"],
+                safety_notes=row["safety_notes"],
+                tags=row["tags"],
+            )
+            for row in rows
+        ]
+
+    def fetch_reviews_needing_rescore(self) -> list[Review]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                """
+                SELECT * FROM reviews
+                WHERE tags LIKE '%llm_error%'
+                   OR humor_notes LIKE 'LLM error:%'
+                   OR humor_notes = 'Parse failure'
+                   OR (humor_score = 0 AND tags = 'misc')
+                ORDER BY updated_at DESC
+                """
+            ).fetchall()
 
         return [
             Review(

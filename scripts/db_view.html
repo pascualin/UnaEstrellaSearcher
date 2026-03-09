@@ -9,7 +9,7 @@
 <body>
   <div class="layout">
     <aside>
-      <div class="brand">Config Studio</div>
+      <div class="brand">Panel de configuración</div>
       <nav>
         <a class="nav-item" href="/config">Configuración</a>
         <a class="nav-item active" href="/db">Base de datos</a>
@@ -34,12 +34,16 @@
               <div class="db-controls" style="margin-left: auto;">
                 <label class="hint" for="review-sort">Ordenar por</label>
                 <select id="review-sort">
-                  <option value="humor_score">Humor score</option>
+                  <option value="humor_score">Puntuación de humor</option>
                   <option value="updated_at">Última actualización</option>
                 </select>
                 <label class="toggle compact-toggle" for="show-reviewed">
                   <input id="show-reviewed" type="checkbox" />
                   <span>Mostrar revisadas</span>
+                </label>
+                <label class="toggle compact-toggle" for="only-selected">
+                  <input id="only-selected" type="checkbox" />
+                  <span>Solo seleccionadas</span>
                 </label>
               </div>
             </div>
@@ -57,6 +61,27 @@
     const byId = (id) => document.getElementById(id);
     const reviewSort = byId("review-sort");
     const showReviewed = byId("show-reviewed");
+    const onlySelected = byId("only-selected");
+    const SESSION_KEYS = {
+      reviewSort: "db.reviewSort",
+      showReviewed: "db.showReviewed",
+      onlySelected: "db.onlySelected",
+    };
+
+    function loadFilterState() {
+      const storedSort = sessionStorage.getItem(SESSION_KEYS.reviewSort);
+      if (storedSort) {
+        reviewSort.value = storedSort;
+      }
+      showReviewed.checked = sessionStorage.getItem(SESSION_KEYS.showReviewed) === "1";
+      onlySelected.checked = sessionStorage.getItem(SESSION_KEYS.onlySelected) === "1";
+    }
+
+    function persistFilterState() {
+      sessionStorage.setItem(SESSION_KEYS.reviewSort, reviewSort.value);
+      sessionStorage.setItem(SESSION_KEYS.showReviewed, showReviewed.checked ? "1" : "0");
+      sessionStorage.setItem(SESSION_KEYS.onlySelected, onlySelected.checked ? "1" : "0");
+    }
 
     function renderReviews(container, rows) {
       if (!rows || rows.length === 0) {
@@ -80,7 +105,7 @@
     }
 
     async function loadDb() {
-      const res = await fetch(`/api/db-data?sort=${encodeURIComponent(reviewSort.value)}&show_reviewed=${showReviewed.checked ? "1" : "0"}`);
+      const res = await fetch(`/api/db-data?sort=${encodeURIComponent(reviewSort.value)}&show_reviewed=${showReviewed.checked ? "1" : "0"}&only_selected=${onlySelected.checked ? "1" : "0"}`);
       if (!res.ok) {
         byId("db-summary").innerHTML = "<div class='hint'>No se pudo cargar la base de datos.</div>";
         return;
@@ -91,6 +116,7 @@
         `<div class=\"db-summary-card\"><div class=\"label\">Reseñas</div><div class=\"value\">${summary.reviews || 0}</div></div>`,
         `<div class=\"db-summary-card\"><div class=\"label\">Pendientes</div><div class=\"value\">${summary.pending_review || 0}</div></div>`,
         `<div class=\"db-summary-card\"><div class=\"label\">Revisadas</div><div class=\"value\">${summary.reviewed || 0}</div></div>`,
+        `<div class=\"db-summary-card\"><div class=\"label\">Seleccionadas</div><div class=\"value\">${summary.selected || 0}</div></div>`,
         `<div class=\"db-summary-card\"><div class=\"label\">Reseñas vacías (última)</div><div class=\"value\">${summary.empty_reviews_skipped_last || 0}</div></div>`,
         `<div class=\"db-summary-card\"><div class=\"label\">Reseñas vacías (total)</div><div class=\"value\">${summary.empty_reviews_skipped_total || 0}</div></div>`,
       ].join("");
@@ -107,8 +133,19 @@
     }
 
     byId("db-refresh").addEventListener("click", loadDb);
-    reviewSort.addEventListener("change", loadDb);
-    showReviewed.addEventListener("change", loadDb);
+    reviewSort.addEventListener("change", () => {
+      persistFilterState();
+      loadDb();
+    });
+    showReviewed.addEventListener("change", () => {
+      persistFilterState();
+      loadDb();
+    });
+    onlySelected.addEventListener("change", () => {
+      persistFilterState();
+      loadDb();
+    });
+    loadFilterState();
     loadDb();
   </script>
 </body>

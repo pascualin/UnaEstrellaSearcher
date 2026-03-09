@@ -9,16 +9,15 @@
 <body>
   <div class="layout">
     <aside>
-      <div class="brand">Config Studio</div>
+      <div class="brand">Panel de configuración</div>
       <nav>
         <a class="nav-item active" href="/config">Configuración</a>
         <a class="nav-item" href="/db">Base de datos</a>
       </nav>
       <div class="actions side-actions">
         <button id="save">Guardar cambios</button>
-        <button class="secondary" id="reload">Recargar</button>
-        <button class="secondary" id="run-weekly">Run Weekly</button>
-        <button class="secondary" id="run-dry">Run Dry-Run</button>
+        <button class="secondary" id="run-weekly">Ejecutar</button>
+        <button class="secondary" id="run-dry">Ejecutar simulación</button>
         <div class="banner" id="status"></div>
       </div>
     </aside>
@@ -31,69 +30,69 @@
         <section id="config-view" class="view active">
           <div class="grid">
             <div class="card">
-              <h2>App</h2>
+              <h2>Aplicación</h2>
               <div class="row">
                 <div>
-                  <label>Weekly target</label>
+                  <label>Objetivo semanal</label>
                   <input id="weekly_target_count" type="number" min="1" />
                 </div>
                 <div>
-                  <label>Humor threshold</label>
+                  <label>Umbral de humor</label>
                   <input id="humor_threshold" type="number" min="0" max="100" />
                 </div>
               </div>
               <div class="row">
                 <div>
-                  <label>Max reviews/place</label>
+                  <label>Máx. reseñas por sitio</label>
                   <input id="max_reviews_per_place" type="number" min="1" />
                 </div>
                 <div>
-                  <label>Max places/run</label>
+                  <label>Máx. sitios por ejecución</label>
                   <input id="max_places_per_run" type="number" min="1" />
                 </div>
               </div>
-              <label>Locale</label>
+              <label>Idioma</label>
               <input id="locale" type="text" />
               <div class="toggle">
                 <input id="allow_repeat_suggestions" type="checkbox" />
-                <label for="allow_repeat_suggestions">Allow repeat suggestions</label>
+                <label for="allow_repeat_suggestions">Permitir sugerencias repetidas</label>
               </div>
             </div>
 
             <div class="card">
-              <h2>Discovery</h2>
-              <label>Country</label>
+              <h2>Descubrimiento</h2>
+              <label>País</label>
               <input id="country" type="text" />
-              <label>Regions (una por línea, opcional)</label>
+              <label>Regiones (una por línea, opcional)</label>
               <textarea id="regions"></textarea>
-              <label>Name contains</label>
+              <label>El nombre contiene</label>
               <input id="name_contains" type="text" />
-              <label>Categories (una por línea)</label>
+              <label>Categorías (una por línea)</label>
               <textarea id="categories"></textarea>
               <div class="row">
                 <div>
-                  <label>Min total reviews</label>
+                  <label>Mínimo de reseñas</label>
                   <input id="min_total_reviews" type="number" min="0" />
                 </div>
                 <div>
-                  <label>Require recent days</label>
+                  <label>Antigüedad máxima (días)</label>
                   <input id="require_recent_days" type="number" min="1" />
                 </div>
               </div>
             </div>
 
             <div class="card">
-              <h2>Scoring (OpenAI)</h2>
-              <label>Model</label>
+              <h2>Puntuación (OpenAI)</h2>
+              <label>Modelo</label>
               <input id="scoring_model" type="text" />
               <div class="row">
                 <div>
-                  <label>Temperature</label>
+                  <label>Temperatura</label>
                   <input id="temperature" type="number" step="0.1" min="0" max="2" />
                 </div>
                 <div>
-                  <label>Max output tokens</label>
-                  <input id="max_output_tokens" type="number" min="1" />
+                  <label>Máx. tokens de salida</label>
+                  <input id="max_output_tokens" type="number" min="320" />
                 </div>
               </div>
               <label>Prompt</label>
@@ -101,13 +100,13 @@
             </div>
 
             <div class="card">
-              <h2>Curation</h2>
-              <label>Theme limits (formato: tag=valor por línea)</label>
+              <h2>Curación</h2>
+              <label>Límites por tema (formato: tag=valor por línea)</label>
               <textarea id="theme_limits"></textarea>
             </div>
             <div class="card">
               <h2>Ejecución en vivo</h2>
-              <p class="hint">Seguimiento en tiempo real mientras se ejecuta el weekly.</p>
+              <p class="hint">Seguimiento en tiempo real mientras se ejecuta la tarea semanal.</p>
               <div class="meta meta-stack">
                 <span><strong>Sitios encontrados:</strong> <span id="live-sites">0</span></span>
                 <span><strong>Sitio actual:</strong> <span id="live-place">-</span></span>
@@ -349,7 +348,6 @@
     }
 
     byId("save").addEventListener("click", saveConfig);
-    byId("reload").addEventListener("click", loadConfig);
     byId("run-weekly").addEventListener("click", runWeekly);
     byId("run-dry").addEventListener("click", runDryRun);
     byId("no-results-close").addEventListener("click", closeNoResults);

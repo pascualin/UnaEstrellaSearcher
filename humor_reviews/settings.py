@@ -85,7 +85,8 @@ def load_settings(path: str | Path = "config.yaml") -> Settings:
 
     app_raw = raw.get("app", {})
     discovery_raw = raw.get("discovery", {})
-    providers_raw = raw.get("providers", {}).get("serpapi", {})
+    providers_root = raw.get("providers", {})
+    providers_raw = providers_root.get("serpapi", {})
     scoring_raw = raw.get("scoring", {})
     safety_raw = raw.get("safety", {})
     curation_raw = raw.get("curation", {})
@@ -119,7 +120,7 @@ def load_settings(path: str | Path = "config.yaml") -> Settings:
 
     scoring = ScoringSettings(
         provider=str(scoring_raw.get("provider", "openai")),
-        model=str(scoring_raw.get("model", "gpt-4o-mini")),
+        model=str(scoring_raw.get("model", "gpt-5.2")),
         api_key_env=str(scoring_raw.get("api_key_env", "OPENAI_API_KEY")),
         prompt=str(
             scoring_raw.get(
@@ -140,7 +141,7 @@ def load_settings(path: str | Path = "config.yaml") -> Settings:
             )
         ),
         temperature=float(scoring_raw.get("temperature", 0.2)),
-        max_output_tokens=int(scoring_raw.get("max_output_tokens", 20)),
+        max_output_tokens=int(scoring_raw.get("max_output_tokens", 160)),
     )
 
     safety = SafetySettings(
