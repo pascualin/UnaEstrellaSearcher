@@ -14,18 +14,38 @@
         <a class="nav-item" href="/db">Volver a Base de datos</a>
         <a class="nav-item" href="/config">Configuración</a>
       </nav>
+      <div class="review-nav-row">
+        <a class="review-nav-button {{prev_review_class}}" href="{{prev_review_href}}">Anterior</a>
+        <a class="review-nav-button {{next_review_class}}" href="{{next_review_href}}">Siguiente</a>
+      </div>
+      <section class="sidebar-actions" aria-label="Acciones de la reseña">
+        <div class="sidebar-actions-divider"></div>
+        <div class="sidebar-actions-title">Acciones</div>
+        <div class="sidebar-actions-list">
+          <button class="sidebar-action-button" id="copy-review-url">Copiar URL</button>
+          <button class="sidebar-action-button" id="copy-review-text">Copiar texto</button>
+          <button class="sidebar-action-button" id="copy-review-image" data-rating="{{rating}}">Copiar imagen</button>
+          <button class="sidebar-action-button" id="reviewed-toggle" data-review-id="{{review_id}}" data-reviewed="{{reviewed}}">{{reviewed_action_label}}</button>
+          <button class="sidebar-action-button" id="selected-toggle" data-review-id="{{review_id}}" data-selected="{{selected}}">{{selected_action_label}}</button>
+        </div>
+        <div class="sidebar-actions-feedback">
+          <div class="hint" id="reviewed-feedback"></div>
+          <div class="hint" id="selected-feedback"></div>
+          <div class="hint" id="copy-feedback"></div>
+        </div>
+      </section>
     </aside>
     <div class="content">
       <main>
         <div class="gm-shell">
           <section class="gm-place-card">
             <div class="gm-place-copy">
-              <h1>{{place_name}}</h1>
-              <p class="gm-place-type">{{place_category}}</p>
-              <p class="gm-place-address">{{place_address}}</p>
+              <h1 id="place-name">{{place_name}}</h1>
+              <p class="gm-place-type" id="place-category">{{place_category}}</p>
+              <p class="gm-place-address" id="place-address">{{place_address}}</p>
               <div class="gm-place-links">{{maps_link}}</div>
             </div>
-            <div class="gm-place-avatar">{{place_avatar}}</div>
+            <div class="gm-place-avatar" id="place-avatar">{{place_avatar}}</div>
           </section>
 
           <section class="gm-review-card">
@@ -34,18 +54,18 @@
             {{summary_html}}
 
             <div class="gm-review-author-row">
-              <div class="gm-reviewer-avatar">{{reviewer_avatar}}</div>
+              <div class="gm-reviewer-avatar" id="reviewer-avatar">{{reviewer_avatar}}</div>
               <div class="gm-reviewer-meta">
-                <div class="gm-reviewer-name">{{reviewer_html}}</div>
+                <div class="gm-reviewer-name" id="reviewer-name">{{reviewer_html}}</div>
               </div>
             </div>
 
             <div class="gm-rating-row">
-              <div class="gm-stars">{{rating_stars}}</div>
-              <div class="gm-rating-date">{{date}}</div>
+              <div class="gm-stars" id="review-stars">{{rating_stars}}</div>
+              <div class="gm-rating-date" id="review-date">{{date}}</div>
             </div>
 
-            <div class="gm-review-text">{{review_text}}</div>
+            <div class="gm-review-text" id="review-text">{{review_text}}</div>
 
             {{owner_reply_html}}
           </section>
@@ -69,15 +89,10 @@
                 <div><strong>Selección:</strong> <span id="selected-label">{{selected_label}}</span></div>
                 <div><strong>Actualizado:</strong> {{updated_at}}</div>
               </div>
-              <div class="actions gm-actions">
-                <button class="secondary" id="reviewed-toggle" data-review-id="{{review_id}}" data-reviewed="{{reviewed}}">{{reviewed_button}}</button>
-                <button class="secondary" id="selected-toggle" data-review-id="{{review_id}}" data-selected="{{selected}}">{{selected_button}}</button>
-              </div>
-              <div class="hint" id="reviewed-feedback"></div>
-              <div class="hint" id="selected-feedback"></div>
             </div>
           </section>
         </div>
+        <script type="application/json" id="copy-review-payload">{{copy_review_payload}}</script>
       </main>
     </div>
   </div>
@@ -88,6 +103,22 @@
     const selectedToggle = document.getElementById("selected-toggle");
     const selectedLabel = document.getElementById("selected-label");
     const selectedFeedback = document.getElementById("selected-feedback");
+    const copyReviewImageButton = document.getElementById("copy-review-image");
+    const copyReviewTextButton = document.getElementById("copy-review-text");
+    const copyReviewUrlButton = document.getElementById("copy-review-url");
+    const copyFeedback = document.getElementById("copy-feedback");
+    const copyReviewPayloadNode = document.getElementById("copy-review-payload");
+
+    function syncActionLabels() {
+      if (reviewedToggle) {
+        const reviewed = reviewedToggle.dataset.reviewed === "true";
+        reviewedToggle.textContent = reviewed ? "Marcar no revisada" : "Marcar revisada";
+      }
+      if (selectedToggle) {
+        const selected = selectedToggle.dataset.selected === "true";
+        selectedToggle.textContent = selected ? "No seleccionar" : "Seleccionar";
+      }
+    }
 
     async function toggleReviewed() {
       if (!reviewedToggle) return;
@@ -108,7 +139,7 @@
         }
         reviewedToggle.dataset.reviewed = next ? "true" : "false";
         reviewedLabel.textContent = next ? "Revisada" : "Pendiente de revisar";
-        reviewedToggle.textContent = next ? "Quitar marca de revisada" : "Marcar como revisada";
+        syncActionLabels();
         if (reviewedFeedback) reviewedFeedback.textContent = "Estado de revisión actualizado.";
       } catch (error) {
         if (reviewedFeedback) reviewedFeedback.textContent = "No se pudo conectar con la UI local.";
@@ -136,12 +167,321 @@
         }
         selectedToggle.dataset.selected = next ? "true" : "false";
         selectedLabel.textContent = next ? "Seleccionada" : "No seleccionada";
-        selectedToggle.textContent = next ? "Quitar selección" : "Marcar como seleccionada";
+        syncActionLabels();
         if (selectedFeedback) selectedFeedback.textContent = "Selección actualizada.";
       } catch (error) {
         if (selectedFeedback) selectedFeedback.textContent = "No se pudo conectar con la UI local.";
       } finally {
         selectedToggle.disabled = false;
+      }
+    }
+
+    function avatarColors(seedText, light) {
+      let hash = 0;
+      for (const char of seedText) {
+        hash = ((hash << 5) - hash) + char.charCodeAt(0);
+        hash |= 0;
+      }
+      const hue = Math.abs(hash) % 360;
+      const sat = light ? 45 : 52;
+      const lumA = light ? 91 : 54;
+      const lumB = light ? 97 : 38;
+      return [`hsl(${hue} ${sat}% ${lumA}%)`, `hsl(${(hue + 22) % 360} ${sat - 4}% ${lumB}%)`];
+    }
+
+    function wrapLines(ctx, text, maxWidth) {
+      const rawLines = String(text || "").split(/\n+/);
+      const lines = [];
+      for (const rawLine of rawLines) {
+        const words = rawLine.trim().split(/\s+/).filter(Boolean);
+        if (!words.length) {
+          lines.push("");
+          continue;
+        }
+        let line = words[0];
+        for (let i = 1; i < words.length; i += 1) {
+          const candidate = `${line} ${words[i]}`;
+          if (ctx.measureText(candidate).width <= maxWidth) {
+            line = candidate;
+          } else {
+            lines.push(line);
+            line = words[i];
+          }
+        }
+        lines.push(line);
+      }
+      return lines;
+    }
+
+    function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, color) {
+      const lines = wrapLines(ctx, text, maxWidth);
+      ctx.fillStyle = color;
+      let currentY = y;
+      for (const line of lines) {
+        if (line) {
+          ctx.fillText(line, x, currentY);
+        }
+        currentY += lineHeight;
+      }
+      return currentY;
+    }
+
+    function drawAvatar(ctx, x, y, size, text, light = false) {
+      const [start, end] = avatarColors(text, light);
+      const gradient = ctx.createLinearGradient(x, y, x + size, y + size);
+      gradient.addColorStop(0, start);
+      gradient.addColorStop(1, end);
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = light ? "#3c4043" : "rgba(255, 255, 255, 0.96)";
+      ctx.font = `700 ${Math.round(size * 0.34)}px "Outfit", sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text || "?", x + size / 2, y + size / 2 + 2);
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+    }
+
+    function drawStars(ctx, x, y, rating) {
+      const full = Math.max(0, Math.min(5, Number(rating) || 0));
+      ctx.font = '700 28px "Outfit", sans-serif';
+      for (let i = 0; i < 5; i += 1) {
+        ctx.fillStyle = i < full ? "#fbbc04" : "#dadce0";
+        ctx.fillText("★", x + i * 32, y);
+      }
+    }
+
+    function cleanCopiedValue(value) {
+      const text = String(value || "").trim();
+      if (!text) return "";
+      if (/^\{\{[^{}]+\}\}$/.test(text)) return "";
+      return text;
+    }
+
+    function asNotionQuote(text) {
+      return String(text || "")
+        .split(/\n+/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => `> ${line}`)
+        .join("\n");
+    }
+
+    function buildClipboardText(reviewerName, reviewText, ownerReplyText) {
+      const parts = [reviewerName];
+      if (reviewText) {
+        parts.push(asNotionQuote(reviewText));
+      }
+      if (ownerReplyText) {
+        parts.push("Respuesta de propietario");
+        parts.push(asNotionQuote(ownerReplyText));
+      }
+      return parts.filter(Boolean).join("\n\n");
+    }
+
+    async function copyReviewImage() {
+      if (!copyReviewImageButton || !copyFeedback) return;
+      copyReviewImageButton.disabled = true;
+      if (copyReviewTextButton) copyReviewTextButton.disabled = true;
+      copyFeedback.textContent = "";
+      try {
+        if (!navigator.clipboard || typeof ClipboardItem === "undefined") {
+          copyFeedback.textContent = "Tu navegador no permite copiar imágenes al portapapeles.";
+          return;
+        }
+        if (document.fonts && document.fonts.ready) {
+          await document.fonts.ready;
+        }
+
+        const placeName = (document.getElementById("place-name")?.textContent || "").trim();
+        const placeCategory = (document.getElementById("place-category")?.textContent || "").trim();
+        const placeAddress = (document.getElementById("place-address")?.textContent || "").trim();
+        const placeAvatar = (document.getElementById("place-avatar")?.textContent || "").trim();
+        const reviewerName = (document.getElementById("reviewer-name")?.textContent || "").trim();
+        const reviewerAvatar = (document.getElementById("reviewer-avatar")?.textContent || "").trim();
+        const reviewDate = (document.getElementById("review-date")?.textContent || "").trim();
+        const reviewText = (document.getElementById("review-text")?.textContent || "").trim();
+        let payload = {};
+        try {
+          payload = copyReviewPayloadNode ? JSON.parse(copyReviewPayloadNode.textContent || "{}") : {};
+        } catch (error) {
+          payload = {};
+        }
+        const ownerReplyText = cleanCopiedValue(payload.owner_reply_text) || cleanCopiedValue(document.getElementById("owner-reply-text")?.textContent);
+        const ownerReplyDate = cleanCopiedValue(payload.owner_reply_date) || cleanCopiedValue(document.getElementById("owner-reply-date")?.textContent);
+        const rating = Number(copyReviewImageButton.dataset.rating || "0");
+        const clipboardText = buildClipboardText(reviewerName, reviewText, ownerReplyText);
+
+        const canvas = document.createElement("canvas");
+        const width = 980;
+        const padding = 52;
+        const contentWidth = width - padding * 2;
+        const reviewTextWidth = contentWidth;
+        const ownerReplyWidth = contentWidth - 88;
+        const estimateCtx = canvas.getContext("2d");
+
+        estimateCtx.font = '400 30px "Outfit", sans-serif';
+        const reviewLines = wrapLines(estimateCtx, reviewText, reviewTextWidth);
+        estimateCtx.font = '400 28px "Outfit", sans-serif';
+        const ownerReplyLines = ownerReplyText ? wrapLines(estimateCtx, ownerReplyText, ownerReplyWidth) : [];
+        estimateCtx.font = '500 24px "Outfit", sans-serif';
+        const ownerDateLines = ownerReplyDate ? wrapLines(estimateCtx, ownerReplyDate, ownerReplyWidth) : [];
+
+        let height = 700 + reviewLines.length * 44;
+        if (ownerReplyText) {
+          height += 132 + ownerReplyLines.length * 40 + ownerDateLines.length * 34;
+        }
+        height += 120;
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+
+        ctx.fillStyle = "#f5f5f5";
+        ctx.fillRect(0, 0, width, height);
+        ctx.strokeStyle = "#d2d2d2";
+        ctx.lineWidth = 1;
+
+        const placeCardHeight = 318;
+        ctx.beginPath();
+        ctx.moveTo(0, placeCardHeight);
+        ctx.lineTo(width, placeCardHeight);
+        ctx.stroke();
+
+        ctx.fillStyle = "#202124";
+        ctx.font = '700 48px "Outfit", sans-serif';
+        drawWrappedText(ctx, placeName, padding, 86, contentWidth - 206, 56, "#202124");
+
+        ctx.font = '400 26px "Outfit", sans-serif';
+        ctx.fillStyle = "#5f6368";
+        ctx.fillText(placeCategory || "Negocio", padding, 154);
+
+        ctx.font = '400 25px "Outfit", sans-serif';
+        drawWrappedText(ctx, placeAddress || "Sin dirección", padding, 210, contentWidth - 206, 34, "#5f6368");
+
+        ctx.font = '700 24px "Outfit", sans-serif';
+        ctx.fillStyle = "#0b879c";
+        ctx.fillText("DETALLES DEL LUGAR", padding, 286);
+
+        drawAvatar(ctx, width - padding - 152, 36, 152, placeAvatar, false);
+
+        let currentY = placeCardHeight + 82;
+        ctx.font = '400 25px "Outfit", sans-serif';
+        ctx.fillStyle = "#5f6368";
+        ctx.fillText("No se verificaron las opiniones", padding, currentY);
+
+        currentY += 64;
+        drawAvatar(ctx, padding, currentY, 82, reviewerAvatar, true);
+
+        ctx.font = '700 34px "Outfit", sans-serif';
+        ctx.fillStyle = "#202124";
+        ctx.fillText(reviewerName || "Anónimo", padding + 114, currentY + 52);
+
+        currentY += 142;
+        drawStars(ctx, padding, currentY, rating);
+        ctx.font = '500 26px "Outfit", sans-serif';
+        ctx.fillStyle = "#5f6368";
+        ctx.fillText(reviewDate, padding + 230, currentY);
+
+        currentY += 66;
+        ctx.font = '400 30px "Outfit", sans-serif';
+        currentY = drawWrappedText(ctx, reviewText, padding, currentY, reviewTextWidth, 44, "#202124");
+
+        if (ownerReplyText) {
+          currentY += 40;
+          const boxX = padding;
+          const boxY = currentY;
+          const boxWidth = contentWidth;
+          const boxHeight = 86 + ownerReplyLines.length * 40 + ownerDateLines.length * 34 + 60;
+
+          ctx.fillStyle = "#ffffff";
+          ctx.strokeStyle = "#e1e3e1";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 28);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.font = '700 28px "Outfit", sans-serif';
+          ctx.fillStyle = "#202124";
+          ctx.fillText("Respuesta del propietario", boxX + 30, boxY + 54);
+
+          ctx.font = '400 28px "Outfit", sans-serif';
+          let replyY = drawWrappedText(ctx, ownerReplyText, boxX + 30, boxY + 108, ownerReplyWidth, 40, "#202124");
+          if (ownerReplyDate) {
+            ctx.font = '500 24px "Outfit", sans-serif';
+            drawWrappedText(ctx, ownerReplyDate, boxX + 30, replyY + 22, ownerReplyWidth, 34, "#5f6368");
+          }
+        }
+
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+        if (!blob) {
+          copyFeedback.textContent = "No se pudo generar la imagen.";
+          return;
+        }
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            [blob.type]: blob,
+            "text/plain": new Blob([clipboardText], { type: "text/plain" }),
+          }),
+        ]);
+        copyFeedback.textContent = "Imagen copiada al portapapeles.";
+      } catch (error) {
+        copyFeedback.textContent = "No se pudo copiar la imagen. Prueba con Chrome o Edge y recarga la página.";
+      } finally {
+        copyReviewImageButton.disabled = false;
+        if (copyReviewTextButton) copyReviewTextButton.disabled = false;
+      }
+    }
+
+    async function copyReviewText() {
+      if (!copyReviewTextButton || !copyFeedback) return;
+      copyReviewTextButton.disabled = true;
+      if (copyReviewImageButton) copyReviewImageButton.disabled = true;
+      copyFeedback.textContent = "";
+      try {
+        let payload = {};
+        try {
+          payload = copyReviewPayloadNode ? JSON.parse(copyReviewPayloadNode.textContent || "{}") : {};
+        } catch (error) {
+          payload = {};
+        }
+        const reviewerName = (document.getElementById("reviewer-name")?.textContent || "").trim();
+        const reviewText = (document.getElementById("review-text")?.textContent || "").trim();
+        const ownerReplyText = cleanCopiedValue(payload.owner_reply_text) || cleanCopiedValue(document.getElementById("owner-reply-text")?.textContent);
+        const clipboardText = buildClipboardText(reviewerName, reviewText, ownerReplyText);
+        await navigator.clipboard.writeText(clipboardText);
+        copyFeedback.textContent = "Texto copiado al portapapeles.";
+      } catch (error) {
+        copyFeedback.textContent = "No se pudo copiar el texto. Prueba con Chrome o Edge y recarga la página.";
+      } finally {
+        copyReviewTextButton.disabled = false;
+        if (copyReviewImageButton) copyReviewImageButton.disabled = false;
+      }
+    }
+
+    async function copyReviewUrl() {
+      if (!copyReviewUrlButton || !copyFeedback) return;
+      copyReviewUrlButton.disabled = true;
+      if (copyReviewImageButton) copyReviewImageButton.disabled = true;
+      if (copyReviewTextButton) copyReviewTextButton.disabled = true;
+      copyFeedback.textContent = "";
+      try {
+        const reviewUrl = document.querySelector(".gm-place-link")?.getAttribute("href") || "";
+        if (!reviewUrl) {
+          copyFeedback.textContent = "Esta reseña no tiene URL disponible.";
+          return;
+        }
+        await navigator.clipboard.writeText(reviewUrl);
+        copyFeedback.textContent = "URL copiada al portapapeles.";
+      } catch (error) {
+        copyFeedback.textContent = "No se pudo copiar la URL. Prueba con Chrome o Edge y recarga la página.";
+      } finally {
+        copyReviewUrlButton.disabled = false;
+        if (copyReviewImageButton) copyReviewImageButton.disabled = false;
+        if (copyReviewTextButton) copyReviewTextButton.disabled = false;
       }
     }
 
@@ -151,6 +491,16 @@
     if (selectedToggle) {
       selectedToggle.addEventListener("click", toggleSelected);
     }
+    if (copyReviewImageButton) {
+      copyReviewImageButton.addEventListener("click", copyReviewImage);
+    }
+    if (copyReviewTextButton) {
+      copyReviewTextButton.addEventListener("click", copyReviewText);
+    }
+    if (copyReviewUrlButton) {
+      copyReviewUrlButton.addEventListener("click", copyReviewUrl);
+    }
+    syncActionLabels();
   </script>
 </body>
 </html>

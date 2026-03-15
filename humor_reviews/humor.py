@@ -8,6 +8,7 @@ from typing import Any, Dict
 
 from openai import OpenAI
 
+from .api_logging import emit_api_log, sanitize_for_log
 from .settings import ScoringSettings
 
 
@@ -37,20 +38,41 @@ def score_review(
         owner_reply=(owner_reply or "").strip(),
         rating=rating,
     )
+    request_payload = {
+        "model": settings.model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Devuelve SOLO JSON con: "
+                    "score (entero 0-100), notes (string), tags (array de strings), summary (string corto)."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "humor_score",
+                "strict": True,
+            },
+        },
+        "temperature": settings.temperature,
+        "max_completion_tokens": max(settings.max_output_tokens, 320),
+    }
+    emit_api_log(
+        "api_request",
+        {
+            "provider": "openai",
+            "api": "chat.completions.create",
+            "params": request_payload,
+        },
+    )
 
     try:
         response = client.chat.completions.create(
-            model=settings.model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Devuelve SOLO JSON con: "
-                        "score (entero 0-100), notes (string), tags (array de strings), summary (string corto)."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
+            model=request_payload["model"],
+            messages=request_payload["messages"],
             response_format={
                 "type": "json_schema",
                 "json_schema": {
@@ -69,11 +91,21 @@ def score_review(
                     "strict": True,
                 },
             },
-            temperature=settings.temperature,
-            max_completion_tokens=max(settings.max_output_tokens, 320),
+            temperature=request_payload["temperature"],
+            max_completion_tokens=request_payload["max_completion_tokens"],
         )
         content = _extract_message_content(response)
         payload = _parse_payload(content)
+        emit_api_log(
+            "api_response",
+            {
+                "provider": "openai",
+                "api": "chat.completions.create",
+                "model": settings.model,
+                "response": sanitize_for_log(_response_to_mapping(response)),
+                "parsed_payload": payload,
+            },
+        )
         return HumorResult(
             score=_clamp_score(payload.get("score", 0)),
             notes=str(payload.get("notes", "LLM score")).strip() or "LLM score",
@@ -82,6 +114,16 @@ def score_review(
         )
     except Exception as exc:  # pragma: no cover - network/runtime issues
         message = _redact_secrets(str(exc), [api_key])
+        emit_api_log(
+            "api_error",
+            {
+                "provider": "openai",
+                "api": "chat.completions.create",
+                "model": settings.model,
+                "error_type": exc.__class__.__name__,
+                "error": message,
+            },
+        )
         return HumorResult(
             score=0,
             notes=f"LLM error: {exc.__class__.__name__} - {message}" if message else f"LLM error: {exc.__class__.__name__}",
