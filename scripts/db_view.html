@@ -126,7 +126,13 @@
           if (event.target.closest("a")) return;
           const reviewId = row.dataset.reviewId;
           if (reviewId) {
-            window.location.href = `/review?id=${encodeURIComponent(reviewId)}`;
+            const params = new URLSearchParams({
+              id: reviewId,
+              sort: reviewSort.value,
+              show_reviewed: showReviewed.checked ? "1" : "0",
+              only_selected: onlySelected.checked ? "1" : "0",
+            });
+            window.location.href = `/review?${params.toString()}`;
           }
         });
       });

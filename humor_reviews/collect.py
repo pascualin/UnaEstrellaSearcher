@@ -12,6 +12,7 @@ import requests
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .api_cache import load_cached_json, save_cached_json
+from .api_logging import emit_api_log
 from .settings import ProviderSettings
 
 
@@ -45,6 +46,22 @@ def _serpapi_reviews(
     }
     cached = load_cached_json(cache_dir, "reviews", cache_payload)
     if isinstance(cached, dict):
+        emit_api_log(
+            "api_cache_hit",
+            {
+                "provider": "serpapi",
+                "api": "google_maps_reviews",
+                "params": {
+                    "engine": "google_maps_reviews",
+                    "data_id": data_id,
+                    "hl": hl,
+                    "gl": gl,
+                    "sort_by": "ratingLow",
+                    "next_page_token": next_page_token or "",
+                },
+                "review_count": len(cached.get("reviews", []) or []),
+            },
+        )
         return cached
 
     url = "https://serpapi.com/search.json"
@@ -58,6 +75,16 @@ def _serpapi_reviews(
     }
     if next_page_token:
         params["next_page_token"] = next_page_token
+    emit_api_log(
+        "api_request",
+        {
+            "provider": "serpapi",
+            "api": "google_maps_reviews",
+            "method": "GET",
+            "url": url,
+            "params": params,
+        },
+    )
     try:
         resp = requests.get(url, params=params, timeout=20)
         resp.raise_for_status()
@@ -75,6 +102,33 @@ def _serpapi_reviews(
             f"{exc.__class__.__name__}: {exc}"
         ) from exc
     payload = resp.json()
+    reviews = payload.get("reviews", []) or []
+    emit_api_log(
+        "api_response",
+        {
+            "provider": "serpapi",
+            "api": "google_maps_reviews",
+            "status_code": resp.status_code,
+            "request_url": _redact_request_url(resp.request),
+            "search_metadata_status": (payload.get("search_metadata") or {}).get("status"),
+            "review_count": len(reviews),
+            "reviews_preview": [
+                {
+                    "rating": item.get("rating"),
+                    "date": item.get("date") or item.get("published_date") or "",
+                    "reviewer": (
+                        item.get("user", {}) if isinstance(item.get("user"), dict) else item.get("user")
+                    ),
+                    "snippet": str(
+                        item.get("snippet") or item.get("text") or item.get("description") or ""
+                    )[:180],
+                }
+                for item in reviews[:3]
+            ],
+            "next_page_token": ((payload.get("serpapi_pagination") or {}).get("next_page_token") or ""),
+            "response_excerpt": _response_excerpt(resp),
+        },
+    )
     save_cached_json(cache_dir, "reviews", cache_payload, payload)
     return payload
 

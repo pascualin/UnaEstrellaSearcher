@@ -3,8 +3,8 @@ app:
   data_dir: data
   weekly_target_count: 20
   humor_threshold: 0
-  max_reviews_per_place: 20
-  max_places_per_run: 55
+  max_reviews_per_place: 10
+  max_places_per_run: 10
   allow_repeat_suggestions: false
   locale: es
 discovery:
@@ -12,15 +12,9 @@ discovery:
   country: ES
   regions:
   - Madrid, Spain
-  - Barcelona, Spain
-  - Valencia, Spain
-  - Sevilla, Spain
-  - Málaga, Spain
   name_contains: ''
   categories:
-  - restaurantes
-  - hoteles
-  - tiendas
+  - restaurant
   min_total_reviews: 10
   require_recent_days: 3650
 providers:

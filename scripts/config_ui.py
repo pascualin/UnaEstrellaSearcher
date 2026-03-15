@@ -8,7 +8,7 @@ import re
 import sqlite3
 import threading
 from datetime import datetime
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, List
@@ -158,7 +158,52 @@ def _fetch_db_snapshot(sort_by: str, show_reviewed: bool, only_selected: bool) -
     }
 
 
-def _render_review_detail(review_id: str) -> str | None:
+def _review_filters(sort_by: str, show_reviewed: bool, only_selected: bool) -> tuple[str, str]:
+    order_by = "r.updated_at DESC"
+    if sort_by == "humor_score":
+        order_by = "r.humor_score DESC, r.updated_at DESC"
+    filters: list[str] = []
+    if not show_reviewed:
+        filters.append("COALESCE(r.reviewed, 0) = 0")
+    if only_selected:
+        filters.append("COALESCE(r.selected, 0) = 1")
+    review_filter = f"WHERE {' AND '.join(filters)}" if filters else ""
+    return order_by, review_filter
+
+
+def _review_navigation(
+    review_id: str,
+    sort_by: str,
+    show_reviewed: bool,
+    only_selected: bool,
+) -> tuple[str, str]:
+    db_path = _db_path()
+    if not db_path.exists():
+        return "", ""
+    order_by, review_filter = _review_filters(sort_by, show_reviewed, only_selected)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT r.review_id FROM reviews r "
+            f"{review_filter} "
+            f"ORDER BY {order_by} LIMIT 200"
+        ).fetchall()
+    ids = [str(row["review_id"]) for row in rows]
+    try:
+        index = ids.index(review_id)
+    except ValueError:
+        return "", ""
+    prev_id = ids[index - 1] if index > 0 else ""
+    next_id = ids[index + 1] if index + 1 < len(ids) else ""
+    return prev_id, next_id
+
+
+def _render_review_detail(
+    review_id: str,
+    sort_by: str = "updated_at",
+    show_reviewed: bool = False,
+    only_selected: bool = False,
+) -> str | None:
     db_path = _db_path()
     if not db_path.exists():
         return None
@@ -221,7 +266,9 @@ def _render_review_detail(review_id: str) -> str | None:
     summary = _esc(row["summary"] or "")
     review_text = _esc(row["text"] or "")
     owner_reply_raw = str(row["owner_reply"] or "").strip()
-    owner_reply = _esc(_format_owner_reply(owner_reply_raw))
+    owner_reply_text_raw, owner_reply_date_raw = _split_owner_reply(owner_reply_raw)
+    owner_reply = _esc(owner_reply_text_raw)
+    owner_reply_date = _esc(owner_reply_date_raw)
     tags_raw = str(row["tags"] or "").strip() or "misc"
     tags = _esc(tags_raw)
     tags_title = _esc(tags_raw)
@@ -244,21 +291,53 @@ def _render_review_detail(review_id: str) -> str | None:
             "</section>"
         )
     owner_reply_html = (
-        f'<section class="gm-owner-reply"><h3>Respuesta del propietario</h3><div class="gm-owner-reply-text">{owner_reply}</div></section>'
+        '<section class="gm-owner-reply" id="owner-reply-card">'
+        '<h3>Respuesta del propietario</h3>'
+        f'<div class="gm-owner-reply-text" id="owner-reply-text">{owner_reply}</div>'
+        f'<div class="gm-owner-reply-date" id="owner-reply-date">{owner_reply_date}</div>'
+        "</section>"
         if owner_reply
         else ""
+    )
+    copy_review_payload = _esc(
+        json.dumps(
+            {
+                "owner_reply_text": owner_reply_text_raw,
+                "owner_reply_date": owner_reply_date_raw,
+            },
+            ensure_ascii=False,
+        )
     )
     reviewed = bool(row["reviewed"])
     reviewed_label = "Revisada" if reviewed else "Pendiente de revisar"
     reviewed_button = "Quitar marca de revisada" if reviewed else "Marcar como revisada"
+    reviewed_action_label = "Marcar no revisada" if reviewed else "Marcar revisada"
     selected = bool(row["selected"])
     selected_label = "Seleccionada" if selected else "No seleccionada"
     selected_button = "Quitar selección" if selected else "Marcar como seleccionada"
+    selected_action_label = "No seleccionar" if selected else "Seleccionar"
+    prev_review_id, next_review_id = _review_navigation(
+        review_id,
+        sort_by,
+        show_reviewed,
+        only_selected,
+    )
 
     template = _load_html(REVIEW_HTML_PATH, "Missing review_detail.html")
     updated_at = _format_datetime(str(row["updated_at"] or ""))
-    return (
+    nav_base = (
+        f"&sort={quote(sort_by, safe='')}"
+        f"&show_reviewed={'1' if show_reviewed else '0'}"
+        f"&only_selected={'1' if only_selected else '0'}"
+    )
+    prev_review_href = f"/review?id={quote(prev_review_id, safe='')}{nav_base}" if prev_review_id else "#"
+    next_review_href = f"/review?id={quote(next_review_id, safe='')}{nav_base}" if next_review_id else "#"
+    html = (
         template.replace("{{place_name}}", place_name)
+        .replace("{{prev_review_href}}", prev_review_href)
+        .replace("{{next_review_href}}", next_review_href)
+        .replace("{{prev_review_class}}", "" if prev_review_id else "is-disabled")
+        .replace("{{next_review_class}}", "" if next_review_id else "is-disabled")
         .replace("{{place_category}}", place_category)
         .replace("{{place_address}}", place_address or "Sin dirección")
         .replace("{{place_avatar}}", place_avatar)
@@ -267,6 +346,7 @@ def _render_review_detail(review_id: str) -> str | None:
         .replace("{{summary_html}}", summary_html)
         .replace("{{review_text}}", review_text or "(sin texto)")
         .replace("{{owner_reply_html}}", owner_reply_html)
+        .replace("{{copy_review_payload}}", copy_review_payload)
         .replace("{{humor_score}}", _esc(row["humor_score"]))
         .replace("{{safety_label}}", _esc(row["safety_label"]))
         .replace("{{safety_notes}}", _esc(row["safety_notes"]))
@@ -280,13 +360,16 @@ def _render_review_detail(review_id: str) -> str | None:
         .replace("{{reviewed}}", "true" if reviewed else "false")
         .replace("{{reviewed_label}}", reviewed_label)
         .replace("{{reviewed_button}}", reviewed_button)
+        .replace("{{reviewed_action_label}}", reviewed_action_label)
         .replace("{{selected}}", "true" if selected else "false")
         .replace("{{selected_label}}", selected_label)
         .replace("{{selected_button}}", selected_button)
+        .replace("{{selected_action_label}}", selected_action_label)
         .replace("{{reviewer_html}}", reviewer_html)
         .replace("{{updated_at}}", _esc(updated_at))
         .replace("{{maps_link}}", maps_link)
     )
+    return html.replace("{{copy_review_payload}}", "{}")
 
 
 def _set_reviewed(review_id: str, reviewed: bool) -> bool:
@@ -331,22 +414,27 @@ def _parse_reviewer_payload(raw: str) -> tuple[str, str] | None:
 
 
 def _format_owner_reply(raw: str) -> str:
+    text, date = _split_owner_reply(raw)
+    if text and date:
+        return f"{text}\n\n{date}"
+    return text
+
+
+def _split_owner_reply(raw: str) -> tuple[str, str]:
     raw = raw.strip()
     if not raw:
-        return ""
+        return "", ""
     if raw.startswith("{") and raw.endswith("}"):
         try:
             payload = ast.literal_eval(raw)
         except Exception:
-            return raw
+            return raw, ""
         if isinstance(payload, dict):
             text = str(payload.get("text") or payload.get("snippet") or payload.get("response") or "").strip()
             date = str(payload.get("date") or payload.get("published_date") or "").strip()
-            if text and date:
-                return f"{text}\n\n{date}"
             if text:
-                return text
-    return raw
+                return text, date
+    return raw, ""
 
 
 def _format_datetime(raw: str) -> str:
@@ -422,14 +510,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path.startswith("/review"):
             review_id = ""
+            sort_by = "updated_at"
+            show_reviewed = False
+            only_selected = False
             if "?" in self.path:
                 query = urlsplit(self.path).query
                 parsed = parse_qs(query)
                 review_id = (parsed.get("id") or [""])[0]
+                sort_by = (parsed.get("sort") or ["updated_at"])[0]
+                show_reviewed = (parsed.get("show_reviewed") or ["0"])[0].lower() in {"1", "true", "yes", "on"}
+                only_selected = (parsed.get("only_selected") or ["0"])[0].lower() in {"1", "true", "yes", "on"}
             if not review_id:
                 self._send(400, b"Missing review id", "text/plain")
                 return
-            html = _render_review_detail(review_id)
+            html = _render_review_detail(review_id, sort_by, show_reviewed, only_selected)
             if html is None:
                 self._send(404, b"Review not found", "text/plain")
                 return

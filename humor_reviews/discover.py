@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,6 +14,7 @@ import requests
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .api_cache import load_cached_json, save_cached_json
+from .api_logging import emit_api_log
 from .settings import DiscoverySettings, ProviderSettings
 from .storage import Place
 
@@ -46,6 +49,22 @@ def _serpapi_maps_search(
     }
     cached = load_cached_json(cache_dir, "discover", cache_payload)
     if isinstance(cached, list):
+        emit_api_log(
+            "api_cache_hit",
+            {
+                "provider": "serpapi",
+                "api": "google_maps_search",
+                "params": {
+                    "engine": "google_maps",
+                    "type": "search",
+                    "q": query,
+                    "hl": hl,
+                    "gl": gl,
+                    "location": location or "",
+                },
+                "result_count": len(cached),
+            },
+        )
         return cached, bool(location)
 
     url = "https://serpapi.com/search.json"
@@ -61,6 +80,16 @@ def _serpapi_maps_search(
         params["no_cache"] = "true"
     if location:
         params["location"] = location
+    emit_api_log(
+        "api_request",
+        {
+            "provider": "serpapi",
+            "api": "google_maps_search",
+            "method": "GET",
+            "url": url,
+            "params": params,
+        },
+    )
     try:
         resp = requests.get(url, params=params, timeout=20)
         resp.raise_for_status()
@@ -91,6 +120,27 @@ def _serpapi_maps_search(
         ) from exc
     data = resp.json()
     results = data.get("local_results", []) or []
+    emit_api_log(
+        "api_response",
+        {
+            "provider": "serpapi",
+            "api": "google_maps_search",
+            "status_code": resp.status_code,
+            "request_url": _redact_request_url(resp.request),
+            "search_metadata_status": (data.get("search_metadata") or {}).get("status"),
+            "result_count": len(results),
+            "results_preview": [
+                {
+                    "title": item.get("title") or item.get("name") or "",
+                    "address": item.get("address") or item.get("formatted_address") or "",
+                    "place_id": item.get("place_id") or "",
+                    "data_id": item.get("data_id") or "",
+                }
+                for item in results[:5]
+            ],
+            "response_excerpt": _response_excerpt(resp),
+        },
+    )
     save_cached_json(cache_dir, "discover", cache_payload, results)
     return results, bool(location)
 
@@ -187,12 +237,23 @@ def discover_places(
             skipped_region = 0
             skipped_recent = 0
             for place_raw in results:
-                # Region filtering disabled to avoid over-filtering when SerpApi returns
-                # locations with inconsistent address formatting.
                 place_id = str(place_raw.get("place_id") or "")
                 data_id = str(place_raw.get("data_id") or "")
                 if not place_id and not data_id:
                     skipped_no_ids += 1
+                    continue
+                if region and not _region_matches(place_raw, region):
+                    skipped_region += 1
+                    _emit_discovery_progress(
+                        "region_filtered_out",
+                        {
+                            "region": region,
+                            "category": category,
+                            "query": query,
+                            "place_name": place_raw.get("title") or place_raw.get("name") or "Unknown",
+                            "address": place_raw.get("address") or place_raw.get("formatted_address") or "",
+                        },
+                    )
                     continue
 
                 total_reviews = int(place_raw.get("reviews") or 0)
@@ -462,16 +523,53 @@ def _category_matches(place_raw: dict, category: str) -> bool:
 def _region_matches(place_raw: dict, region: str) -> bool:
     if not region:
         return True
-    address = str(
+    address = _normalize_region_text(
+        str(
         place_raw.get("address")
         or place_raw.get("formatted_address")
         or place_raw.get("location")
         or ""
-    ).lower()
+        )
+    )
     if not address:
         return True
-    parts = [p.strip().lower() for p in region.split(",") if p.strip()]
-    return all(part in address for part in parts)
+    parts = _region_parts(region)
+    if not parts:
+        return True
+
+    # Use the most specific location term first. This avoids false negatives like
+    # "Estepona. Malaga" and also avoids requiring "Spain" to appear in addresses.
+    primary = parts[0]
+    if primary in address:
+        return True
+
+    # Fall back to exact phrase match for the normalized region string.
+    normalized_region = _normalize_region_text(region)
+    if normalized_region and normalized_region in address:
+        return True
+
+    return False
+
+
+def _region_parts(region: str) -> list[str]:
+    ignored = {"espana", "spain", "es", "malaga province"}
+    normalized = _normalize_region_text(region)
+    if not normalized:
+        return []
+    parts = [
+        part.strip()
+        for part in re.split(r"[,.;:/\-]+", normalized)
+        if part.strip()
+    ]
+    return [part for part in parts if part not in ignored]
+
+
+def _normalize_region_text(value: str) -> str:
+    ascii_value = unicodedata.normalize("NFKD", str(value or ""))
+    ascii_value = "".join(ch for ch in ascii_value if not unicodedata.combining(ch))
+    ascii_value = ascii_value.lower()
+    ascii_value = re.sub(r"[^a-z0-9\s,.;:/-]+", " ", ascii_value)
+    return re.sub(r"\s+", " ", ascii_value).strip()
 
 
 def _emit_discovery_progress(event: str, payload: dict) -> None:
