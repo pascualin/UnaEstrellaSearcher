@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import html as html_lib
 import json
 import os
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import yaml
+
+from humor_reviews.notion_sync import NotionSyncError, append_review_image, create_review_page
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,17 +73,72 @@ def _ensure_review_columns(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()}
     if "summary" not in columns:
         conn.execute("ALTER TABLE reviews ADD COLUMN summary TEXT")
-    if "reviewed" not in columns:
-        conn.execute("ALTER TABLE reviews ADD COLUMN reviewed INTEGER DEFAULT 0")
-    if "selected" not in columns:
-        conn.execute("ALTER TABLE reviews ADD COLUMN selected INTEGER DEFAULT 0")
+    if "notion_page_id" not in columns:
+        conn.execute("ALTER TABLE reviews ADD COLUMN notion_page_id TEXT")
+    if "notion_page_url" not in columns:
+        conn.execute("ALTER TABLE reviews ADD COLUMN notion_page_url TEXT")
+    if "notion_image_uploaded_at" not in columns:
+        conn.execute("ALTER TABLE reviews ADD COLUMN notion_image_uploaded_at TEXT")
+    _migrate_legacy_review_status(conn, columns)
 
 
-def _fetch_db_snapshot(sort_by: str, show_reviewed: bool, only_selected: bool) -> Dict[str, Any]:
+def _migrate_legacy_review_status(conn: sqlite3.Connection, columns: set[str] | None = None) -> None:
+    if columns is None:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()}
+    has_reviewed = "reviewed" in columns
+    has_selected = "selected" in columns
+    if not has_reviewed and not has_selected:
+        return
+
+    selected_expr = "COALESCE(selected, 0) = 1" if has_selected else "0"
+    reviewed_expr = "COALESCE(reviewed, 0) = 1" if has_reviewed else "0"
+    conn.execute(
+        f"""
+        UPDATE reviews
+        SET status = CASE
+            WHEN {selected_expr} THEN 'accepted'
+            WHEN {reviewed_expr} THEN 'rejected'
+            ELSE ''
+        END
+        WHERE LOWER(COALESCE(status, '')) IN ('', 'new')
+        """
+    )
+
+
+def _normalize_status(raw: str | None) -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"accepted", "aceptada", "selected", "used"}:
+        return "accepted"
+    if value in {"rejected", "rechazada", "discarded"}:
+        return "rejected"
+    return ""
+
+
+def _status_label(raw: str | None) -> str:
+    normalized = _normalize_status(raw)
+    if normalized == "accepted":
+        return "Aceptada"
+    if normalized == "rejected":
+        return "Rechazada"
+    return "Vacío"
+
+
+def _status_filter_sql(status_filter: str) -> tuple[str, tuple]:
+    normalized = str(status_filter or "pending").strip().lower()
+    if normalized == "accepted":
+        return "WHERE LOWER(COALESCE(r.status, '')) IN ('accepted', 'aceptada', 'selected', 'used')", ()
+    if normalized == "rejected":
+        return "WHERE LOWER(COALESCE(r.status, '')) IN ('rejected', 'rechazada', 'discarded')", ()
+    if normalized == "all":
+        return "", ()
+    return "WHERE LOWER(COALESCE(r.status, '')) IN ('', 'new')", ()
+
+
+def _fetch_db_snapshot(sort_by: str, status_filter: str) -> Dict[str, Any]:
     db_path = _db_path()
     if not db_path.exists():
         return {
-            "summary": {"places": 0, "reviews": 0, "shortlist": 0, "reviewed": 0, "pending_review": 0, "selected": 0},
+            "summary": {"places": 0, "reviews": 0, "shortlist": 0, "pending": 0, "accepted": 0, "rejected": 0},
             "places": [],
             "reviews": [],
             "shortlist": [],
@@ -118,9 +176,9 @@ def _fetch_db_snapshot(sort_by: str, show_reviewed: bool, only_selected: bool) -
         "places": _rows("SELECT COUNT(*) as count FROM places")[0]["count"],
         "reviews": _rows("SELECT COUNT(*) as count FROM reviews")[0]["count"],
         "shortlist": _rows("SELECT COUNT(*) as count FROM shortlist")[0]["count"],
-        "reviewed": _scalar("SELECT COUNT(*) as count FROM reviews WHERE COALESCE(reviewed, 0) = 1"),
-        "pending_review": _scalar("SELECT COUNT(*) as count FROM reviews WHERE COALESCE(reviewed, 0) = 0"),
-        "selected": _scalar("SELECT COUNT(*) as count FROM reviews WHERE COALESCE(selected, 0) = 1"),
+        "pending": _scalar("SELECT COUNT(*) as count FROM reviews WHERE LOWER(COALESCE(status, '')) IN ('', 'new')"),
+        "accepted": _scalar("SELECT COUNT(*) as count FROM reviews WHERE LOWER(COALESCE(status, '')) IN ('accepted', 'aceptada', 'selected', 'used')"),
+        "rejected": _scalar("SELECT COUNT(*) as count FROM reviews WHERE LOWER(COALESCE(status, '')) IN ('rejected', 'rechazada', 'discarded')"),
     }
     summary["empty_reviews_skipped_total"] = _scalar(
         "SELECT COALESCE(SUM(count), 0) as count FROM ingest_stats WHERE event = 'empty_reviews_skipped'"
@@ -131,23 +189,20 @@ def _fetch_db_snapshot(sort_by: str, show_reviewed: bool, only_selected: bool) -
     order_by = "r.updated_at DESC"
     if sort_by == "humor_score":
         order_by = "r.humor_score DESC, r.updated_at DESC"
-    filters: list[str] = []
-    if not show_reviewed:
-        filters.append("COALESCE(r.reviewed, 0) = 0")
-    if only_selected:
-        filters.append("COALESCE(r.selected, 0) = 1")
-    review_filter = f"WHERE {' AND '.join(filters)}" if filters else ""
+    review_filter, review_params = _status_filter_sql(status_filter)
 
     reviews = _rows(
         "SELECT "
         "r.review_id, r.rating, r.date, r.humor_score, r.safety_label, r.status, r.updated_at, r.review_url, "
-        "COALESCE(r.reviewed, 0) as reviewed, COALESCE(r.selected, 0) as selected, "
         "p.name as place_name, p.address as place_locality "
         "FROM reviews r "
         "LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id) "
         f"{review_filter} "
-        f"ORDER BY {order_by} LIMIT 200"
+        f"ORDER BY {order_by} LIMIT 200",
+        review_params,
     )
+    for row in reviews:
+        row["status_label"] = _status_label(row.get("status"))
     shortlist = _rows(
         "SELECT review_id, batch_date, score FROM shortlist ORDER BY batch_date DESC LIMIT 200"
     )
@@ -158,35 +213,30 @@ def _fetch_db_snapshot(sort_by: str, show_reviewed: bool, only_selected: bool) -
     }
 
 
-def _review_filters(sort_by: str, show_reviewed: bool, only_selected: bool) -> tuple[str, str]:
+def _review_filters(sort_by: str, status_filter: str) -> tuple[str, str, tuple]:
     order_by = "r.updated_at DESC"
     if sort_by == "humor_score":
         order_by = "r.humor_score DESC, r.updated_at DESC"
-    filters: list[str] = []
-    if not show_reviewed:
-        filters.append("COALESCE(r.reviewed, 0) = 0")
-    if only_selected:
-        filters.append("COALESCE(r.selected, 0) = 1")
-    review_filter = f"WHERE {' AND '.join(filters)}" if filters else ""
-    return order_by, review_filter
+    review_filter, params = _status_filter_sql(status_filter)
+    return order_by, review_filter, params
 
 
 def _review_navigation(
     review_id: str,
     sort_by: str,
-    show_reviewed: bool,
-    only_selected: bool,
+    status_filter: str,
 ) -> tuple[str, str]:
     db_path = _db_path()
     if not db_path.exists():
         return "", ""
-    order_by, review_filter = _review_filters(sort_by, show_reviewed, only_selected)
+    order_by, review_filter, review_params = _review_filters(sort_by, status_filter)
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT r.review_id FROM reviews r "
             f"{review_filter} "
-            f"ORDER BY {order_by} LIMIT 200"
+            f"ORDER BY {order_by} LIMIT 200",
+            review_params,
         ).fetchall()
     ids = [str(row["review_id"]) for row in rows]
     try:
@@ -201,8 +251,7 @@ def _review_navigation(
 def _render_review_detail(
     review_id: str,
     sort_by: str = "updated_at",
-    show_reviewed: bool = False,
-    only_selected: bool = False,
+    status_filter: str = "pending",
 ) -> str | None:
     db_path = _db_path()
     if not db_path.exists():
@@ -216,8 +265,7 @@ def _render_review_detail(
                 SELECT
                     r.review_id, r.place_id, r.rating, r.date, r.reviewer_name, r.reviewer_profile_url,
                     r.text, r.summary, r.owner_reply, r.review_url, r.humor_score, r.humor_notes,
-                    r.safety_label, r.safety_notes, r.tags, r.status, r.updated_at,
-                    COALESCE(r.reviewed, 0) as reviewed, COALESCE(r.selected, 0) as selected,
+                    r.safety_label, r.safety_notes, r.tags, r.status, r.updated_at, r.notion_page_url,
                     p.name as place_name, p.address as place_address, p.category as place_category
                 FROM reviews r
                 LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id)
@@ -234,8 +282,7 @@ def _render_review_detail(
                 SELECT
                     r.review_id, r.place_id, r.rating, r.date, r.reviewer_name, r.reviewer_profile_url,
                     r.text, r.summary, r.owner_reply, r.review_url, r.humor_score, r.humor_notes,
-                    r.safety_label, r.safety_notes, r.tags, r.status, r.updated_at,
-                    COALESCE(r.reviewed, 0) as reviewed, COALESCE(r.selected, 0) as selected,
+                    r.safety_label, r.safety_notes, r.tags, r.status, r.updated_at, r.notion_page_url,
                     p.name as place_name, p.address as place_address, p.category as place_category
                 FROM reviews r
                 LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id)
@@ -255,6 +302,7 @@ def _render_review_detail(
     place_address = _esc(place_address_raw)
     place_category = _esc(str(row["place_category"] or "Lugar").strip() or "Lugar")
     review_url = _esc(row["review_url"] or "")
+    notion_page_url = _esc(row["notion_page_url"] or "")
     reviewer_raw = str(row["reviewer_name"] or "Anonymous").strip()
     reviewer_url_raw = str(row["reviewer_profile_url"] or "").strip()
     if reviewer_raw.startswith("{"):
@@ -279,6 +327,11 @@ def _render_review_detail(
         if review_url
         else ""
     )
+    if notion_page_url:
+        maps_link += (
+            (' · ' if maps_link else '')
+            + f'<a class="gm-place-link" href="{notion_page_url}" target="_blank" rel="noopener noreferrer">NOTION</a>'
+        )
     place_avatar = _esc(_avatar_text(place_name_raw))
     reviewer_avatar = _esc(_avatar_text(reviewer_raw))
     rating_stars = _render_stars(int(row["rating"] or 0))
@@ -308,27 +361,19 @@ def _render_review_detail(
             ensure_ascii=False,
         )
     )
-    reviewed = bool(row["reviewed"])
-    reviewed_label = "Revisada" if reviewed else "Pendiente de revisar"
-    reviewed_button = "Quitar marca de revisada" if reviewed else "Marcar como revisada"
-    reviewed_action_label = "Marcar no revisada" if reviewed else "Marcar revisada"
-    selected = bool(row["selected"])
-    selected_label = "Seleccionada" if selected else "No seleccionada"
-    selected_button = "Quitar selección" if selected else "Marcar como seleccionada"
-    selected_action_label = "No seleccionar" if selected else "Seleccionar"
+    status_value = _normalize_status(row["status"])
+    status_label = _status_label(row["status"])
     prev_review_id, next_review_id = _review_navigation(
         review_id,
         sort_by,
-        show_reviewed,
-        only_selected,
+        status_filter,
     )
 
     template = _load_html(REVIEW_HTML_PATH, "Missing review_detail.html")
     updated_at = _format_datetime(str(row["updated_at"] or ""))
     nav_base = (
         f"&sort={quote(sort_by, safe='')}"
-        f"&show_reviewed={'1' if show_reviewed else '0'}"
-        f"&only_selected={'1' if only_selected else '0'}"
+        f"&status={quote(status_filter, safe='')}"
     )
     prev_review_href = f"/review?id={quote(prev_review_id, safe='')}{nav_base}" if prev_review_id else "#"
     next_review_href = f"/review?id={quote(next_review_id, safe='')}{nav_base}" if next_review_id else "#"
@@ -356,15 +401,9 @@ def _render_review_detail(
         .replace("{{date}}", _esc(row["date"]))
         .replace("{{rating}}", _esc(row["rating"]))
         .replace("{{status}}", _esc(row["status"]))
+        .replace("{{status_label}}", status_label)
+        .replace("{{status_value}}", status_value)
         .replace("{{review_id}}", _esc(row["review_id"]))
-        .replace("{{reviewed}}", "true" if reviewed else "false")
-        .replace("{{reviewed_label}}", reviewed_label)
-        .replace("{{reviewed_button}}", reviewed_button)
-        .replace("{{reviewed_action_label}}", reviewed_action_label)
-        .replace("{{selected}}", "true" if selected else "false")
-        .replace("{{selected_label}}", selected_label)
-        .replace("{{selected_button}}", selected_button)
-        .replace("{{selected_action_label}}", selected_action_label)
         .replace("{{reviewer_html}}", reviewer_html)
         .replace("{{updated_at}}", _esc(updated_at))
         .replace("{{maps_link}}", maps_link)
@@ -372,7 +411,7 @@ def _render_review_detail(
     return html.replace("{{copy_review_payload}}", "{}")
 
 
-def _set_reviewed(review_id: str, reviewed: bool) -> bool:
+def _set_review_status(review_id: str, status: str) -> bool:
     db_path = _db_path()
     if not db_path.exists():
         return False
@@ -380,24 +419,81 @@ def _set_reviewed(review_id: str, reviewed: bool) -> bool:
         _ensure_review_columns(conn)
         now = datetime.utcnow().isoformat()
         cur = conn.execute(
-            "UPDATE reviews SET reviewed=?, updated_at=? WHERE review_id=?",
-            (1 if reviewed else 0, now, review_id),
+            "UPDATE reviews SET status=?, updated_at=? WHERE review_id=?",
+            (status, now, review_id),
         )
         return cur.rowcount > 0
 
 
-def _set_selected(review_id: str, selected: bool) -> bool:
+def _fetch_review_for_notion(review_id: str) -> dict[str, Any] | None:
     db_path = _db_path()
     if not db_path.exists():
-        return False
+        return None
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_review_columns(conn)
+        row = conn.execute(
+            """
+            SELECT
+                r.review_id, r.reviewer_name, r.text, r.owner_reply, r.review_url,
+                r.humor_score, r.safety_label, r.tags, r.notion_page_id, r.notion_page_url,
+                r.notion_image_uploaded_at,
+                p.name as place_name, p.address as place_address
+            FROM reviews r
+            LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id)
+            WHERE r.review_id = ?
+            """,
+            (review_id,),
+        ).fetchone()
+    if not row:
+        return None
+    owner_reply_text, _ = _split_owner_reply(str(row["owner_reply"] or ""))
+    return {
+        "review_id": row["review_id"],
+        "reviewer_name": row["reviewer_name"] or "",
+        "review_text": row["text"] or "",
+        "owner_reply_text": owner_reply_text,
+        "review_url": row["review_url"] or "",
+        "humor_score": row["humor_score"] or 0,
+        "safety_label": row["safety_label"] or "",
+        "tags": row["tags"] or "",
+        "place_name": row["place_name"] or "",
+        "place_address": row["place_address"] or "",
+        "notion_page_id": row["notion_page_id"] or "",
+        "notion_page_url": row["notion_page_url"] or "",
+        "notion_image_uploaded_at": row["notion_image_uploaded_at"] or "",
+    }
+
+
+def _store_notion_page(review_id: str, page_id: str, page_url: str) -> None:
+    db_path = _db_path()
+    if not db_path.exists():
+        return
     with sqlite3.connect(db_path) as conn:
         _ensure_review_columns(conn)
         now = datetime.utcnow().isoformat()
-        cur = conn.execute(
-            "UPDATE reviews SET selected=?, updated_at=? WHERE review_id=?",
-            (1 if selected else 0, now, review_id),
+        conn.execute(
+            "UPDATE reviews SET notion_page_id=?, notion_page_url=?, updated_at=? WHERE review_id=?",
+            (page_id, page_url, now, review_id),
         )
-        return cur.rowcount > 0
+
+
+def _store_notion_image_uploaded(review_id: str) -> None:
+    db_path = _db_path()
+    if not db_path.exists():
+        return
+    with sqlite3.connect(db_path) as conn:
+        _ensure_review_columns(conn)
+        now = datetime.utcnow().isoformat()
+        conn.execute(
+            "UPDATE reviews SET notion_image_uploaded_at=?, updated_at=? WHERE review_id=?",
+            (now, now, review_id),
+        )
+
+
+def _sanitize_filename(text: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", text.strip()).strip("-._")
+    return cleaned or "review"
 
 
 def _parse_reviewer_payload(raw: str) -> tuple[str, str] | None:
@@ -511,19 +607,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/review"):
             review_id = ""
             sort_by = "updated_at"
-            show_reviewed = False
-            only_selected = False
+            status_filter = "pending"
             if "?" in self.path:
                 query = urlsplit(self.path).query
                 parsed = parse_qs(query)
                 review_id = (parsed.get("id") or [""])[0]
                 sort_by = (parsed.get("sort") or ["updated_at"])[0]
-                show_reviewed = (parsed.get("show_reviewed") or ["0"])[0].lower() in {"1", "true", "yes", "on"}
-                only_selected = (parsed.get("only_selected") or ["0"])[0].lower() in {"1", "true", "yes", "on"}
+                status_filter = (parsed.get("status") or ["pending"])[0]
             if not review_id:
                 self._send(400, b"Missing review id", "text/plain")
                 return
-            html = _render_review_detail(review_id, sort_by, show_reviewed, only_selected)
+            html = _render_review_detail(review_id, sort_by, status_filter)
             if html is None:
                 self._send(404, b"Review not found", "text/plain")
                 return
@@ -564,19 +658,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/db-data"):
             query = self.path.split("?", 1)[1] if "?" in self.path else ""
             sort_by = "updated_at"
-            show_reviewed = False
-            only_selected = False
+            status_filter = "pending"
             for part in query.split("&"):
                 if not part:
                     continue
                 key, _, value = part.partition("=")
                 if key == "sort":
                     sort_by = value
-                if key == "show_reviewed":
-                    show_reviewed = value.lower() in {"1", "true", "yes", "on"}
-                if key == "only_selected":
-                    only_selected = value.lower() in {"1", "true", "yes", "on"}
-            payload = _fetch_db_snapshot(sort_by, show_reviewed, only_selected)
+                if key == "status":
+                    status_filter = value or "pending"
+            payload = _fetch_db_snapshot(sort_by, status_filter)
             self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
             return
         self._send(404, b"Not found", "text/plain")
@@ -632,31 +723,91 @@ class Handler(BaseHTTPRequestHandler):
             body = output.encode("utf-8")
             self._send(200, body, "text/plain; charset=utf-8")
             return
-        if self.path == "/api/review-reviewed":
+        if self.path == "/api/review-status":
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             review_id = str(payload.get("review_id") or "").strip()
-            reviewed = bool(payload.get("reviewed"))
+            status = _normalize_status(str(payload.get("status") or ""))
             if not review_id:
                 self._send(400, b"missing review_id", "text/plain")
                 return
-            if not _set_reviewed(review_id, reviewed):
+            if not _set_review_status(review_id, status):
                 self._send(404, b"review not found", "text/plain")
                 return
-            self._send(200, json.dumps({"ok": True, "reviewed": reviewed}).encode("utf-8"), "application/json")
+            message = ""
+            notion_url = ""
+            if status == "accepted":
+                review = _fetch_review_for_notion(review_id)
+                if review:
+                    if review.get("notion_page_url"):
+                        notion_url = str(review["notion_page_url"])
+                        message = "Estado actualizado. La página de Notion ya existía."
+                    else:
+                        try:
+                            page = create_review_page(review)
+                            _store_notion_page(review_id, page.page_id, page.url)
+                            notion_url = page.url
+                            message = "Estado actualizado y página creada en Notion."
+                        except NotionSyncError as exc:
+                            message = f"Estado actualizado, pero Notion no se pudo sincronizar: {exc}"
+                else:
+                    message = "Estado actualizado."
+            else:
+                message = "Estado actualizado."
+            self._send(
+                200,
+                json.dumps({"ok": True, "status": status, "message": message, "notion_url": notion_url}).encode("utf-8"),
+                "application/json",
+            )
             return
-        if self.path == "/api/review-selected":
+        if self.path == "/api/review-notion-image":
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             review_id = str(payload.get("review_id") or "").strip()
-            selected = bool(payload.get("selected"))
-            if not review_id:
-                self._send(400, b"missing review_id", "text/plain")
+            image_data = str(payload.get("image_data") or "").strip()
+            if not review_id or not image_data:
+                self._send(400, b"missing review_id or image_data", "text/plain")
                 return
-            if not _set_selected(review_id, selected):
+            review = _fetch_review_for_notion(review_id)
+            if not review:
                 self._send(404, b"review not found", "text/plain")
                 return
-            self._send(200, json.dumps({"ok": True, "selected": selected}).encode("utf-8"), "application/json")
+            if not review.get("notion_page_id"):
+                self._send(400, b"review has no notion page", "text/plain")
+                return
+            if review.get("notion_image_uploaded_at"):
+                self._send(
+                    200,
+                    json.dumps({"ok": True, "message": "La imagen de Notion ya existía."}).encode("utf-8"),
+                    "application/json",
+                )
+                return
+            try:
+                if "," in image_data:
+                    image_data = image_data.split(",", 1)[1]
+                image_bytes = base64.b64decode(image_data)
+            except Exception:
+                self._send(400, b"invalid image_data", "text/plain")
+                return
+            filename = _sanitize_filename(
+                f"{review.get('place_name') or 'review'}-{review.get('reviewer_name') or 'anonimo'}.png"
+            )
+            if not filename.lower().endswith(".png"):
+                filename += ".png"
+            try:
+                append_review_image(str(review["notion_page_id"]), image_bytes, filename)
+                _store_notion_image_uploaded(review_id)
+                self._send(
+                    200,
+                    json.dumps({"ok": True, "message": "Captura añadida en Notion."}).encode("utf-8"),
+                    "application/json",
+                )
+            except NotionSyncError as exc:
+                self._send(
+                    502,
+                    json.dumps({"ok": False, "message": f"No se pudo subir la captura a Notion: {exc}"}).encode("utf-8"),
+                    "application/json",
+                )
             return
         self._send(404, b"Not found", "text/plain")
 

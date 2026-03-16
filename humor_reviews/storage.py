@@ -138,10 +138,33 @@ class Storage:
             conn.execute("ALTER TABLE reviews ADD COLUMN reviewer_profile_url TEXT")
         if "summary" not in columns:
             conn.execute("ALTER TABLE reviews ADD COLUMN summary TEXT")
-        if "reviewed" not in columns:
-            conn.execute("ALTER TABLE reviews ADD COLUMN reviewed INTEGER DEFAULT 0")
-        if "selected" not in columns:
-            conn.execute("ALTER TABLE reviews ADD COLUMN selected INTEGER DEFAULT 0")
+        self._migrate_legacy_review_status(conn, columns)
+
+    def _migrate_legacy_review_status(
+        self,
+        conn: sqlite3.Connection,
+        columns: set[str] | None = None,
+    ) -> None:
+        if columns is None:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()}
+        has_reviewed = "reviewed" in columns
+        has_selected = "selected" in columns
+        if not has_reviewed and not has_selected:
+            return
+
+        selected_expr = "COALESCE(selected, 0) = 1" if has_selected else "0"
+        reviewed_expr = "COALESCE(reviewed, 0) = 1" if has_reviewed else "0"
+        conn.execute(
+            f"""
+            UPDATE reviews
+            SET status = CASE
+                WHEN {selected_expr} THEN 'accepted'
+                WHEN {reviewed_expr} THEN 'rejected'
+                ELSE ''
+            END
+            WHERE LOWER(COALESCE(status, '')) IN ('', 'new')
+            """
+        )
 
     def upsert_place(self, place: Place) -> None:
         with sqlite3.connect(self.db_path) as conn:
@@ -323,7 +346,8 @@ class Storage:
                 rows = conn.execute(
                     """
                     SELECT * FROM reviews
-                    WHERE humor_score >= ? AND status != 'discarded'
+                    WHERE humor_score >= ?
+                      AND LOWER(COALESCE(status, '')) NOT IN ('rejected', 'rechazada', 'discarded')
                     ORDER BY humor_score DESC
                     """,
                     (humor_threshold,),
@@ -333,7 +357,7 @@ class Storage:
                     """
                     SELECT * FROM reviews
                     WHERE humor_score >= ?
-                      AND status = 'new'
+                      AND LOWER(COALESCE(status, '')) IN ('', 'new')
                       AND review_id NOT IN (SELECT review_id FROM shortlist)
                     ORDER BY humor_score DESC
                     """,
