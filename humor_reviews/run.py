@@ -113,7 +113,7 @@ def run_collection(
 
                 storage.upsert_review(review)
                 if humor.score < 20:
-                    storage.update_reviewed(review.review_id, True)
+                    storage.update_status(review.review_id, "rejected")
                 per_place_counts[raw.place_id] += 1
                 count += 1
                 place_count += 1
@@ -216,7 +216,8 @@ def run_rescore_llm_errors(storage: Storage, settings, limit: int | None = None)
             tags=",".join(humor.tags),
         )
         storage.upsert_review(updated)
-        storage.update_reviewed(review.review_id, humor.score < 20)
+        if humor.score < 20:
+            storage.update_status(review.review_id, "rejected")
         rescored += 1
 
     print(f"Rescored {rescored} reviews")
@@ -303,7 +304,8 @@ def run_themed_celebrations(
                 tags=",".join(humor.tags),
             )
             storage.upsert_review(review)
-            storage.update_reviewed(review.review_id, humor.score < 20)
+            if humor.score < 20:
+                storage.update_status(review.review_id, "rejected")
             collected_count += 1
             if humor.score > humor_threshold:
                 funny_count += 1

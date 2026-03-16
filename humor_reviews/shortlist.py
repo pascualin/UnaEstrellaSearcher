@@ -44,4 +44,4 @@ def mark_shortlist(storage: Storage, reviews: list[Review]) -> None:
     batch_date = date.today().isoformat()
     for review in reviews:
         storage.mark_shortlist(review.review_id, batch_date, review.humor_score)
-        storage.update_status(review.review_id, "selected")
+        storage.update_status(review.review_id, "accepted")

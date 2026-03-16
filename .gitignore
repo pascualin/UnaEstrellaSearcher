@@ -1,4 +1,6 @@
 .env
+.venv/
+__pycache__/
 *.db
 out/
 .DS_Store

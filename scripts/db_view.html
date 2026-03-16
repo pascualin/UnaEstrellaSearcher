@@ -37,14 +37,13 @@
                   <option value="humor_score">Puntuación de humor</option>
                   <option value="updated_at">Última actualización</option>
                 </select>
-                <label class="toggle compact-toggle" for="show-reviewed">
-                  <input id="show-reviewed" type="checkbox" />
-                  <span>Mostrar revisadas</span>
-                </label>
-                <label class="toggle compact-toggle" for="only-selected">
-                  <input id="only-selected" type="checkbox" />
-                  <span>Solo seleccionadas</span>
-                </label>
+                <label class="hint" for="status-filter">Estado</label>
+                <select id="status-filter">
+                  <option value="pending">Vacío</option>
+                  <option value="accepted">Aceptada</option>
+                  <option value="rejected">Rechazada</option>
+                  <option value="all">Todas</option>
+                </select>
               </div>
             </div>
             <div class="db-summary" id="db-summary"></div>
@@ -60,12 +59,10 @@
   <script>
     const byId = (id) => document.getElementById(id);
     const reviewSort = byId("review-sort");
-    const showReviewed = byId("show-reviewed");
-    const onlySelected = byId("only-selected");
+    const statusFilter = byId("status-filter");
     const SESSION_KEYS = {
       reviewSort: "db.reviewSort",
-      showReviewed: "db.showReviewed",
-      onlySelected: "db.onlySelected",
+      statusFilter: "db.statusFilter",
     };
 
     function loadFilterState() {
@@ -73,14 +70,15 @@
       if (storedSort) {
         reviewSort.value = storedSort;
       }
-      showReviewed.checked = sessionStorage.getItem(SESSION_KEYS.showReviewed) === "1";
-      onlySelected.checked = sessionStorage.getItem(SESSION_KEYS.onlySelected) === "1";
+      const storedStatus = sessionStorage.getItem(SESSION_KEYS.statusFilter);
+      if (storedStatus) {
+        statusFilter.value = storedStatus;
+      }
     }
 
     function persistFilterState() {
       sessionStorage.setItem(SESSION_KEYS.reviewSort, reviewSort.value);
-      sessionStorage.setItem(SESSION_KEYS.showReviewed, showReviewed.checked ? "1" : "0");
-      sessionStorage.setItem(SESSION_KEYS.onlySelected, onlySelected.checked ? "1" : "0");
+      sessionStorage.setItem(SESSION_KEYS.statusFilter, statusFilter.value);
     }
 
     function renderReviews(container, rows) {
@@ -88,7 +86,7 @@
         container.innerHTML = "<div class='hint' style='padding: 12px;'>Sin datos.</div>";
         return;
       }
-      const headers = ["Humor score", "Nombre", "Localidad", "Fecha"];
+      const headers = ["Humor score", "Estado", "Nombre", "Localidad", "Fecha"];
       const thead = "<thead><tr>" + headers.map((h) => `<th>${h}</th>`).join("") + "</tr></thead>";
       const tbody = "<tbody>" + rows.map((row) => {
         const name = row.place_name || "Sitio";
@@ -96,6 +94,7 @@
         const site = url ? `<a href=\"${url}\" target=\"_blank\" rel=\"noopener noreferrer\">${name}</a>` : name;
         return `<tr class=\"review-row\" data-review-id=\"${row.review_id || ""}\">` + [
           `<td>${row.humor_score ?? ""}</td>`,
+          `<td>${row.status_label || "Vacío"}</td>`,
           `<td>${site}</td>`,
           `<td>${row.place_locality || ""}</td>`,
           `<td>${row.date || ""}</td>`,
@@ -105,7 +104,7 @@
     }
 
     async function loadDb() {
-      const res = await fetch(`/api/db-data?sort=${encodeURIComponent(reviewSort.value)}&show_reviewed=${showReviewed.checked ? "1" : "0"}&only_selected=${onlySelected.checked ? "1" : "0"}`);
+      const res = await fetch(`/api/db-data?sort=${encodeURIComponent(reviewSort.value)}&status=${encodeURIComponent(statusFilter.value)}`);
       if (!res.ok) {
         byId("db-summary").innerHTML = "<div class='hint'>No se pudo cargar la base de datos.</div>";
         return;
@@ -114,9 +113,9 @@
       const summary = payload.summary || {};
       byId("db-summary").innerHTML = [
         `<div class=\"db-summary-card\"><div class=\"label\">Reseñas</div><div class=\"value\">${summary.reviews || 0}</div></div>`,
-        `<div class=\"db-summary-card\"><div class=\"label\">Pendientes</div><div class=\"value\">${summary.pending_review || 0}</div></div>`,
-        `<div class=\"db-summary-card\"><div class=\"label\">Revisadas</div><div class=\"value\">${summary.reviewed || 0}</div></div>`,
-        `<div class=\"db-summary-card\"><div class=\"label\">Seleccionadas</div><div class=\"value\">${summary.selected || 0}</div></div>`,
+        `<div class=\"db-summary-card\"><div class=\"label\">Vacías</div><div class=\"value\">${summary.pending || 0}</div></div>`,
+        `<div class=\"db-summary-card\"><div class=\"label\">Aceptadas</div><div class=\"value\">${summary.accepted || 0}</div></div>`,
+        `<div class=\"db-summary-card\"><div class=\"label\">Rechazadas</div><div class=\"value\">${summary.rejected || 0}</div></div>`,
         `<div class=\"db-summary-card\"><div class=\"label\">Reseñas vacías (última)</div><div class=\"value\">${summary.empty_reviews_skipped_last || 0}</div></div>`,
         `<div class=\"db-summary-card\"><div class=\"label\">Reseñas vacías (total)</div><div class=\"value\">${summary.empty_reviews_skipped_total || 0}</div></div>`,
       ].join("");
@@ -129,8 +128,7 @@
             const params = new URLSearchParams({
               id: reviewId,
               sort: reviewSort.value,
-              show_reviewed: showReviewed.checked ? "1" : "0",
-              only_selected: onlySelected.checked ? "1" : "0",
+              status: statusFilter.value,
             });
             window.location.href = `/review?${params.toString()}`;
           }
@@ -143,11 +141,7 @@
       persistFilterState();
       loadDb();
     });
-    showReviewed.addEventListener("change", () => {
-      persistFilterState();
-      loadDb();
-    });
-    onlySelected.addEventListener("change", () => {
+    statusFilter.addEventListener("change", () => {
       persistFilterState();
       loadDb();
     });

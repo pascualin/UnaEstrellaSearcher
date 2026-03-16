@@ -25,12 +25,11 @@
           <button class="sidebar-action-button" id="copy-review-url">Copiar URL</button>
           <button class="sidebar-action-button" id="copy-review-text">Copiar texto</button>
           <button class="sidebar-action-button" id="copy-review-image" data-rating="{{rating}}">Copiar imagen</button>
-          <button class="sidebar-action-button" id="reviewed-toggle" data-review-id="{{review_id}}" data-reviewed="{{reviewed}}">{{reviewed_action_label}}</button>
-          <button class="sidebar-action-button" id="selected-toggle" data-review-id="{{review_id}}" data-selected="{{selected}}">{{selected_action_label}}</button>
+          <button class="sidebar-action-button" id="reject-toggle" data-review-id="{{review_id}}" data-status="{{status_value}}">Rechazar</button>
+          <button class="sidebar-action-button" id="accept-toggle" data-review-id="{{review_id}}" data-status="{{status_value}}">Aceptar</button>
         </div>
         <div class="sidebar-actions-feedback">
-          <div class="hint" id="reviewed-feedback"></div>
-          <div class="hint" id="selected-feedback"></div>
+          <div class="hint" id="status-feedback"></div>
           <div class="hint" id="copy-feedback"></div>
         </div>
       </section>
@@ -43,7 +42,7 @@
               <h1 id="place-name">{{place_name}}</h1>
               <p class="gm-place-type" id="place-category">{{place_category}}</p>
               <p class="gm-place-address" id="place-address">{{place_address}}</p>
-              <div class="gm-place-links">{{maps_link}}</div>
+              <div class="gm-place-links" id="place-links">{{maps_link}}</div>
             </div>
             <div class="gm-place-avatar" id="place-avatar">{{place_avatar}}</div>
           </section>
@@ -84,9 +83,7 @@
             <div class="gm-meta-card">
               <h2>Datos internos</h2>
               <div class="gm-kv-list">
-                <div><strong>Estado:</strong> {{status}}</div>
-                <div><strong>Revisión:</strong> <span id="reviewed-label">{{reviewed_label}}</span></div>
-                <div><strong>Selección:</strong> <span id="selected-label">{{selected_label}}</span></div>
+                <div><strong>Estado:</strong> <span id="status-label">{{status_label}}</span></div>
                 <div><strong>Actualizado:</strong> {{updated_at}}</div>
               </div>
             </div>
@@ -97,82 +94,107 @@
     </div>
   </div>
   <script>
-    const reviewedToggle = document.getElementById("reviewed-toggle");
-    const reviewedLabel = document.getElementById("reviewed-label");
-    const reviewedFeedback = document.getElementById("reviewed-feedback");
-    const selectedToggle = document.getElementById("selected-toggle");
-    const selectedLabel = document.getElementById("selected-label");
-    const selectedFeedback = document.getElementById("selected-feedback");
+    const rejectToggle = document.getElementById("reject-toggle");
+    const acceptToggle = document.getElementById("accept-toggle");
+    const statusLabel = document.getElementById("status-label");
+    const statusFeedback = document.getElementById("status-feedback");
     const copyReviewImageButton = document.getElementById("copy-review-image");
     const copyReviewTextButton = document.getElementById("copy-review-text");
     const copyReviewUrlButton = document.getElementById("copy-review-url");
     const copyFeedback = document.getElementById("copy-feedback");
     const copyReviewPayloadNode = document.getElementById("copy-review-payload");
+    const placeLinks = document.getElementById("place-links");
 
-    function syncActionLabels() {
-      if (reviewedToggle) {
-        const reviewed = reviewedToggle.dataset.reviewed === "true";
-        reviewedToggle.textContent = reviewed ? "Marcar no revisada" : "Marcar revisada";
+    function syncStatusButtons() {
+      const status = acceptToggle?.dataset.status || rejectToggle?.dataset.status || "";
+      if (acceptToggle) {
+        acceptToggle.classList.remove("is-positive", "is-neutral");
+        if (status === "accepted") {
+          acceptToggle.classList.add("is-neutral");
+          acceptToggle.textContent = "Aceptada";
+          acceptToggle.disabled = true;
+        } else {
+          acceptToggle.classList.add("is-positive");
+          acceptToggle.textContent = "Aceptar";
+          acceptToggle.disabled = false;
+        }
       }
-      if (selectedToggle) {
-        const selected = selectedToggle.dataset.selected === "true";
-        selectedToggle.textContent = selected ? "No seleccionar" : "Seleccionar";
+      if (rejectToggle) {
+        rejectToggle.classList.remove("is-danger", "is-neutral");
+        if (status === "rejected") {
+          rejectToggle.classList.add("is-neutral");
+          rejectToggle.textContent = "Rechazada";
+          rejectToggle.disabled = true;
+        } else {
+          rejectToggle.classList.add("is-danger");
+          rejectToggle.textContent = "Rechazar";
+          rejectToggle.disabled = false;
+        }
       }
     }
 
-    async function toggleReviewed() {
-      if (!reviewedToggle) return;
-      const reviewId = reviewedToggle.dataset.reviewId || "";
-      const current = reviewedToggle.dataset.reviewed === "true";
-      const next = !current;
-      reviewedToggle.disabled = true;
-      if (reviewedFeedback) reviewedFeedback.textContent = "";
-      try {
-        const res = await fetch("/api/review-reviewed", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ review_id: reviewId, reviewed: next }),
-        });
-        if (!res.ok) {
-          if (reviewedFeedback) reviewedFeedback.textContent = "No se pudo guardar el cambio. Reinicia el servidor de la UI y prueba de nuevo.";
-          return;
-        }
-        reviewedToggle.dataset.reviewed = next ? "true" : "false";
-        reviewedLabel.textContent = next ? "Revisada" : "Pendiente de revisar";
-        syncActionLabels();
-        if (reviewedFeedback) reviewedFeedback.textContent = "Estado de revisión actualizado.";
-      } catch (error) {
-        if (reviewedFeedback) reviewedFeedback.textContent = "No se pudo conectar con la UI local.";
-      } finally {
-        reviewedToggle.disabled = false;
+    function ensureNotionLink(notionUrl) {
+      const url = String(notionUrl || "").trim();
+      if (!url || !placeLinks) return;
+      const existing = placeLinks.querySelector('a[data-link-kind="notion"]');
+      if (existing) {
+        existing.href = url;
+        return;
       }
+      const link = document.createElement("a");
+      link.className = "gm-place-link";
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.dataset.linkKind = "notion";
+      link.textContent = "NOTION";
+      placeLinks.appendChild(link);
     }
 
-    async function toggleSelected() {
-      if (!selectedToggle) return;
-      const reviewId = selectedToggle.dataset.reviewId || "";
-      const current = selectedToggle.dataset.selected === "true";
-      const next = !current;
-      selectedToggle.disabled = true;
-      if (selectedFeedback) selectedFeedback.textContent = "";
+    async function updateStatus(nextStatus) {
+      const reviewId = acceptToggle?.dataset.reviewId || rejectToggle?.dataset.reviewId || "";
+      if (!reviewId) return;
+      const previousAcceptDisabled = !!acceptToggle?.disabled;
+      const previousRejectDisabled = !!rejectToggle?.disabled;
+      if (acceptToggle) acceptToggle.disabled = true;
+      if (rejectToggle) rejectToggle.disabled = true;
+      if (statusFeedback) statusFeedback.textContent = "";
       try {
-        const res = await fetch("/api/review-selected", {
+        const res = await fetch("/api/review-status", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ review_id: reviewId, selected: next }),
+          body: JSON.stringify({ review_id: reviewId, status: nextStatus }),
         });
         if (!res.ok) {
-          if (selectedFeedback) selectedFeedback.textContent = "No se pudo guardar la selección. Reinicia el servidor de la UI y prueba de nuevo.";
+          if (statusFeedback) statusFeedback.textContent = "No se pudo guardar el cambio. Reinicia el servidor de la UI y prueba de nuevo.";
           return;
         }
-        selectedToggle.dataset.selected = next ? "true" : "false";
-        selectedLabel.textContent = next ? "Seleccionada" : "No seleccionada";
-        syncActionLabels();
-        if (selectedFeedback) selectedFeedback.textContent = "Selección actualizada.";
+        if (acceptToggle) acceptToggle.dataset.status = nextStatus;
+        if (rejectToggle) rejectToggle.dataset.status = nextStatus;
+        if (statusLabel) {
+          statusLabel.textContent = nextStatus === "accepted" ? "Aceptada" : nextStatus === "rejected" ? "Rechazada" : "Vacío";
+        }
+        syncStatusButtons();
+        const payload = await res.json();
+        ensureNotionLink(payload.notion_url);
+        let message = payload.message || "Estado actualizado.";
+        if (nextStatus === "accepted" && payload.notion_url) {
+          try {
+            const imageMessage = await uploadReviewImageToNotion(reviewId);
+            if (imageMessage) {
+              message = `${message} ${imageMessage}`.trim();
+            }
+          } catch (error) {
+            message = `${message} ${error.message || "No se pudo subir la captura a Notion."}`.trim();
+          }
+        }
+        if (statusFeedback) statusFeedback.textContent = message;
       } catch (error) {
-        if (selectedFeedback) selectedFeedback.textContent = "No se pudo conectar con la UI local.";
+        if (statusFeedback) statusFeedback.textContent = "No se pudo conectar con la UI local.";
       } finally {
-        selectedToggle.disabled = false;
+        if (acceptToggle) acceptToggle.disabled = previousAcceptDisabled;
+        if (rejectToggle) rejectToggle.disabled = previousRejectDisabled;
+        syncStatusButtons();
       }
     }
 
@@ -281,6 +303,164 @@
       return parts.filter(Boolean).join("\n\n");
     }
 
+    async function buildReviewImageAsset() {
+      if (document.fonts && document.fonts.ready) {
+        await document.fonts.ready;
+      }
+
+      const placeName = (document.getElementById("place-name")?.textContent || "").trim();
+      const placeCategory = (document.getElementById("place-category")?.textContent || "").trim();
+      const placeAddress = (document.getElementById("place-address")?.textContent || "").trim();
+      const placeAvatar = (document.getElementById("place-avatar")?.textContent || "").trim();
+      const reviewerName = (document.getElementById("reviewer-name")?.textContent || "").trim();
+      const reviewerAvatar = (document.getElementById("reviewer-avatar")?.textContent || "").trim();
+      const reviewDate = (document.getElementById("review-date")?.textContent || "").trim();
+      const reviewText = (document.getElementById("review-text")?.textContent || "").trim();
+      let payload = {};
+      try {
+        payload = copyReviewPayloadNode ? JSON.parse(copyReviewPayloadNode.textContent || "{}") : {};
+      } catch (error) {
+        payload = {};
+      }
+      const ownerReplyText = cleanCopiedValue(payload.owner_reply_text) || cleanCopiedValue(document.getElementById("owner-reply-text")?.textContent);
+      const ownerReplyDate = cleanCopiedValue(payload.owner_reply_date) || cleanCopiedValue(document.getElementById("owner-reply-date")?.textContent);
+      const rating = Number(copyReviewImageButton?.dataset.rating || "0");
+      const clipboardText = buildClipboardText(reviewerName, reviewText, ownerReplyText);
+
+      const canvas = document.createElement("canvas");
+      const width = 980;
+      const padding = 52;
+      const contentWidth = width - padding * 2;
+      const reviewTextWidth = contentWidth;
+      const ownerReplyWidth = contentWidth - 88;
+      const estimateCtx = canvas.getContext("2d");
+
+      estimateCtx.font = '400 30px "Outfit", sans-serif';
+      const reviewLines = wrapLines(estimateCtx, reviewText, reviewTextWidth);
+      estimateCtx.font = '400 28px "Outfit", sans-serif';
+      const ownerReplyLines = ownerReplyText ? wrapLines(estimateCtx, ownerReplyText, ownerReplyWidth) : [];
+      estimateCtx.font = '500 24px "Outfit", sans-serif';
+      const ownerDateLines = ownerReplyDate ? wrapLines(estimateCtx, ownerReplyDate, ownerReplyWidth) : [];
+
+      let height = 700 + reviewLines.length * 44;
+      if (ownerReplyText) {
+        height += 132 + ownerReplyLines.length * 40 + ownerDateLines.length * 34;
+      }
+      height += 120;
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+
+      ctx.fillStyle = "#f5f5f5";
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = "#d2d2d2";
+      ctx.lineWidth = 1;
+
+      const placeCardHeight = 318;
+      ctx.beginPath();
+      ctx.moveTo(0, placeCardHeight);
+      ctx.lineTo(width, placeCardHeight);
+      ctx.stroke();
+
+      ctx.fillStyle = "#202124";
+      ctx.font = '700 48px "Outfit", sans-serif';
+      drawWrappedText(ctx, placeName, padding, 86, contentWidth - 206, 56, "#202124");
+
+      ctx.font = '400 26px "Outfit", sans-serif';
+      ctx.fillStyle = "#5f6368";
+      ctx.fillText(placeCategory || "Negocio", padding, 154);
+
+      ctx.font = '400 25px "Outfit", sans-serif';
+      drawWrappedText(ctx, placeAddress || "Sin dirección", padding, 210, contentWidth - 206, 34, "#5f6368");
+
+      ctx.font = '700 24px "Outfit", sans-serif';
+      ctx.fillStyle = "#0b879c";
+      ctx.fillText("DETALLES DEL LUGAR", padding, 286);
+
+      drawAvatar(ctx, width - padding - 152, 36, 152, placeAvatar, false);
+
+      let currentY = placeCardHeight + 82;
+      ctx.font = '400 25px "Outfit", sans-serif';
+      ctx.fillStyle = "#5f6368";
+      ctx.fillText("No se verificaron las opiniones", padding, currentY);
+
+      currentY += 64;
+      drawAvatar(ctx, padding, currentY, 82, reviewerAvatar, true);
+
+      ctx.font = '700 34px "Outfit", sans-serif';
+      ctx.fillStyle = "#202124";
+      ctx.fillText(reviewerName || "Anónimo", padding + 114, currentY + 52);
+
+      currentY += 142;
+      drawStars(ctx, padding, currentY, rating);
+      ctx.font = '500 26px "Outfit", sans-serif';
+      ctx.fillStyle = "#5f6368";
+      ctx.fillText(reviewDate, padding + 230, currentY);
+
+      currentY += 66;
+      ctx.font = '400 30px "Outfit", sans-serif';
+      currentY = drawWrappedText(ctx, reviewText, padding, currentY, reviewTextWidth, 44, "#202124");
+
+      if (ownerReplyText) {
+        currentY += 40;
+        const boxX = padding;
+        const boxY = currentY;
+        const boxWidth = contentWidth;
+        const boxHeight = 86 + ownerReplyLines.length * 40 + ownerDateLines.length * 34 + 60;
+
+        ctx.fillStyle = "#ffffff";
+        ctx.strokeStyle = "#e1e3e1";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 28);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.font = '700 28px "Outfit", sans-serif';
+        ctx.fillStyle = "#202124";
+        ctx.fillText("Respuesta del propietario", boxX + 30, boxY + 54);
+
+        ctx.font = '400 28px "Outfit", sans-serif';
+        let replyY = drawWrappedText(ctx, ownerReplyText, boxX + 30, boxY + 108, ownerReplyWidth, 40, "#202124");
+        if (ownerReplyDate) {
+          ctx.font = '500 24px "Outfit", sans-serif';
+          drawWrappedText(ctx, ownerReplyDate, boxX + 30, replyY + 22, ownerReplyWidth, 34, "#5f6368");
+        }
+      }
+
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+      if (!blob) {
+        throw new Error("No se pudo generar la imagen.");
+      }
+      return { blob, clipboardText };
+    }
+
+    function blobToDataURL(blob) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(String(reader.result || ""));
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    }
+
+    async function uploadReviewImageToNotion(reviewId) {
+      if (!reviewId) return "";
+      const { blob } = await buildReviewImageAsset();
+      const imageData = await blobToDataURL(blob);
+      const res = await fetch("/api/review-notion-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ review_id: reviewId, image_data: imageData }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload.message || "No se pudo subir la captura a Notion.");
+      }
+      return payload.message || "";
+    }
+
     async function copyReviewImage() {
       if (!copyReviewImageButton || !copyFeedback) return;
       copyReviewImageButton.disabled = true;
@@ -291,136 +471,7 @@
           copyFeedback.textContent = "Tu navegador no permite copiar imágenes al portapapeles.";
           return;
         }
-        if (document.fonts && document.fonts.ready) {
-          await document.fonts.ready;
-        }
-
-        const placeName = (document.getElementById("place-name")?.textContent || "").trim();
-        const placeCategory = (document.getElementById("place-category")?.textContent || "").trim();
-        const placeAddress = (document.getElementById("place-address")?.textContent || "").trim();
-        const placeAvatar = (document.getElementById("place-avatar")?.textContent || "").trim();
-        const reviewerName = (document.getElementById("reviewer-name")?.textContent || "").trim();
-        const reviewerAvatar = (document.getElementById("reviewer-avatar")?.textContent || "").trim();
-        const reviewDate = (document.getElementById("review-date")?.textContent || "").trim();
-        const reviewText = (document.getElementById("review-text")?.textContent || "").trim();
-        let payload = {};
-        try {
-          payload = copyReviewPayloadNode ? JSON.parse(copyReviewPayloadNode.textContent || "{}") : {};
-        } catch (error) {
-          payload = {};
-        }
-        const ownerReplyText = cleanCopiedValue(payload.owner_reply_text) || cleanCopiedValue(document.getElementById("owner-reply-text")?.textContent);
-        const ownerReplyDate = cleanCopiedValue(payload.owner_reply_date) || cleanCopiedValue(document.getElementById("owner-reply-date")?.textContent);
-        const rating = Number(copyReviewImageButton.dataset.rating || "0");
-        const clipboardText = buildClipboardText(reviewerName, reviewText, ownerReplyText);
-
-        const canvas = document.createElement("canvas");
-        const width = 980;
-        const padding = 52;
-        const contentWidth = width - padding * 2;
-        const reviewTextWidth = contentWidth;
-        const ownerReplyWidth = contentWidth - 88;
-        const estimateCtx = canvas.getContext("2d");
-
-        estimateCtx.font = '400 30px "Outfit", sans-serif';
-        const reviewLines = wrapLines(estimateCtx, reviewText, reviewTextWidth);
-        estimateCtx.font = '400 28px "Outfit", sans-serif';
-        const ownerReplyLines = ownerReplyText ? wrapLines(estimateCtx, ownerReplyText, ownerReplyWidth) : [];
-        estimateCtx.font = '500 24px "Outfit", sans-serif';
-        const ownerDateLines = ownerReplyDate ? wrapLines(estimateCtx, ownerReplyDate, ownerReplyWidth) : [];
-
-        let height = 700 + reviewLines.length * 44;
-        if (ownerReplyText) {
-          height += 132 + ownerReplyLines.length * 40 + ownerDateLines.length * 34;
-        }
-        height += 120;
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
-
-        ctx.fillStyle = "#f5f5f5";
-        ctx.fillRect(0, 0, width, height);
-        ctx.strokeStyle = "#d2d2d2";
-        ctx.lineWidth = 1;
-
-        const placeCardHeight = 318;
-        ctx.beginPath();
-        ctx.moveTo(0, placeCardHeight);
-        ctx.lineTo(width, placeCardHeight);
-        ctx.stroke();
-
-        ctx.fillStyle = "#202124";
-        ctx.font = '700 48px "Outfit", sans-serif';
-        drawWrappedText(ctx, placeName, padding, 86, contentWidth - 206, 56, "#202124");
-
-        ctx.font = '400 26px "Outfit", sans-serif';
-        ctx.fillStyle = "#5f6368";
-        ctx.fillText(placeCategory || "Negocio", padding, 154);
-
-        ctx.font = '400 25px "Outfit", sans-serif';
-        drawWrappedText(ctx, placeAddress || "Sin dirección", padding, 210, contentWidth - 206, 34, "#5f6368");
-
-        ctx.font = '700 24px "Outfit", sans-serif';
-        ctx.fillStyle = "#0b879c";
-        ctx.fillText("DETALLES DEL LUGAR", padding, 286);
-
-        drawAvatar(ctx, width - padding - 152, 36, 152, placeAvatar, false);
-
-        let currentY = placeCardHeight + 82;
-        ctx.font = '400 25px "Outfit", sans-serif';
-        ctx.fillStyle = "#5f6368";
-        ctx.fillText("No se verificaron las opiniones", padding, currentY);
-
-        currentY += 64;
-        drawAvatar(ctx, padding, currentY, 82, reviewerAvatar, true);
-
-        ctx.font = '700 34px "Outfit", sans-serif';
-        ctx.fillStyle = "#202124";
-        ctx.fillText(reviewerName || "Anónimo", padding + 114, currentY + 52);
-
-        currentY += 142;
-        drawStars(ctx, padding, currentY, rating);
-        ctx.font = '500 26px "Outfit", sans-serif';
-        ctx.fillStyle = "#5f6368";
-        ctx.fillText(reviewDate, padding + 230, currentY);
-
-        currentY += 66;
-        ctx.font = '400 30px "Outfit", sans-serif';
-        currentY = drawWrappedText(ctx, reviewText, padding, currentY, reviewTextWidth, 44, "#202124");
-
-        if (ownerReplyText) {
-          currentY += 40;
-          const boxX = padding;
-          const boxY = currentY;
-          const boxWidth = contentWidth;
-          const boxHeight = 86 + ownerReplyLines.length * 40 + ownerDateLines.length * 34 + 60;
-
-          ctx.fillStyle = "#ffffff";
-          ctx.strokeStyle = "#e1e3e1";
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 28);
-          ctx.fill();
-          ctx.stroke();
-
-          ctx.font = '700 28px "Outfit", sans-serif';
-          ctx.fillStyle = "#202124";
-          ctx.fillText("Respuesta del propietario", boxX + 30, boxY + 54);
-
-          ctx.font = '400 28px "Outfit", sans-serif';
-          let replyY = drawWrappedText(ctx, ownerReplyText, boxX + 30, boxY + 108, ownerReplyWidth, 40, "#202124");
-          if (ownerReplyDate) {
-            ctx.font = '500 24px "Outfit", sans-serif';
-            drawWrappedText(ctx, ownerReplyDate, boxX + 30, replyY + 22, ownerReplyWidth, 34, "#5f6368");
-          }
-        }
-
-        const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
-        if (!blob) {
-          copyFeedback.textContent = "No se pudo generar la imagen.";
-          return;
-        }
+        const { blob, clipboardText } = await buildReviewImageAsset();
         await navigator.clipboard.write([
           new ClipboardItem({
             [blob.type]: blob,
@@ -485,11 +536,11 @@
       }
     }
 
-    if (reviewedToggle) {
-      reviewedToggle.addEventListener("click", toggleReviewed);
+    if (rejectToggle) {
+      rejectToggle.addEventListener("click", () => updateStatus("rejected"));
     }
-    if (selectedToggle) {
-      selectedToggle.addEventListener("click", toggleSelected);
+    if (acceptToggle) {
+      acceptToggle.addEventListener("click", () => updateStatus("accepted"));
     }
     if (copyReviewImageButton) {
       copyReviewImageButton.addEventListener("click", copyReviewImage);
@@ -500,7 +551,7 @@
     if (copyReviewUrlButton) {
       copyReviewUrlButton.addEventListener("click", copyReviewUrl);
     }
-    syncActionLabels();
+    syncStatusButtons();
   </script>
 </body>
 </html>
