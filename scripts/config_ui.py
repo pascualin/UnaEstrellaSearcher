@@ -6,6 +6,7 @@ import html as html_lib
 import json
 import os
 import re
+import socket
 import sqlite3
 import threading
 from datetime import datetime
@@ -17,11 +18,12 @@ from typing import Any, Dict, List
 import yaml
 
 from humor_reviews.notion_sync import NotionSyncError, append_review_image, create_review_page
+from humor_reviews.translation import translate_review_to_spanish
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config.yaml"
-HOST = "127.0.0.1"
+HOST = os.getenv("CONFIG_UI_HOST", "127.0.0.1").strip() or "127.0.0.1"
 PORT = 5173
 
 
@@ -69,6 +71,38 @@ def _append_progress_log(path: Path, event: str, payload: dict) -> None:
         return
 
 
+def _ui_auth_credentials() -> tuple[str, str] | None:
+    username = os.getenv("CONFIG_UI_USERNAME", "").strip()
+    password = os.getenv("CONFIG_UI_PASSWORD", "").strip()
+    if username and password:
+        return username, password
+    return None
+
+
+def _is_authorized(headers) -> bool:
+    credentials = _ui_auth_credentials()
+    if not credentials:
+        return True
+    provided = str(headers.get("Authorization") or "").strip()
+    if not provided.startswith("Basic "):
+        return False
+    encoded = provided[6:].strip()
+    try:
+        decoded = base64.b64decode(encoded).decode("utf-8")
+    except Exception:
+        return False
+    return decoded == f"{credentials[0]}:{credentials[1]}"
+
+
+def _local_ip() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return str(sock.getsockname()[0])
+    except OSError:
+        return "127.0.0.1"
+
+
 def _ensure_review_columns(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()}
     if "summary" not in columns:
@@ -79,6 +113,14 @@ def _ensure_review_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE reviews ADD COLUMN notion_page_url TEXT")
     if "notion_image_uploaded_at" not in columns:
         conn.execute("ALTER TABLE reviews ADD COLUMN notion_image_uploaded_at TEXT")
+    if "translated_text" not in columns:
+        conn.execute("ALTER TABLE reviews ADD COLUMN translated_text TEXT")
+    if "translated_owner_reply" not in columns:
+        conn.execute("ALTER TABLE reviews ADD COLUMN translated_owner_reply TEXT")
+    if "original_text_language" not in columns:
+        conn.execute("ALTER TABLE reviews ADD COLUMN original_text_language TEXT")
+    if "original_owner_reply_language" not in columns:
+        conn.execute("ALTER TABLE reviews ADD COLUMN original_owner_reply_language TEXT")
     _migrate_legacy_review_status(conn, columns)
 
 
@@ -264,7 +306,7 @@ def _render_review_detail(
                 """
                 SELECT
                     r.review_id, r.place_id, r.rating, r.date, r.reviewer_name, r.reviewer_profile_url,
-                    r.text, r.summary, r.owner_reply, r.review_url, r.humor_score, r.humor_notes,
+                    r.text, r.translated_text, r.original_text_language, r.summary, r.owner_reply, r.translated_owner_reply, r.original_owner_reply_language, r.review_url, r.humor_score, r.humor_notes,
                     r.safety_label, r.safety_notes, r.tags, r.status, r.updated_at, r.notion_page_url,
                     p.name as place_name, p.address as place_address, p.category as place_category
                 FROM reviews r
@@ -281,7 +323,7 @@ def _render_review_detail(
                 """
                 SELECT
                     r.review_id, r.place_id, r.rating, r.date, r.reviewer_name, r.reviewer_profile_url,
-                    r.text, r.summary, r.owner_reply, r.review_url, r.humor_score, r.humor_notes,
+                    r.text, r.translated_text, r.original_text_language, r.summary, r.owner_reply, r.translated_owner_reply, r.original_owner_reply_language, r.review_url, r.humor_score, r.humor_notes,
                     r.safety_label, r.safety_notes, r.tags, r.status, r.updated_at, r.notion_page_url,
                     p.name as place_name, p.address as place_address, p.category as place_category
                 FROM reviews r
@@ -292,6 +334,16 @@ def _render_review_detail(
             ).fetchone()
         if not row:
             return None
+        translated_review_text, translated_owner_reply_text, original_review_language, original_owner_reply_language = _ensure_translated_texts(
+            conn,
+            review_id=str(row["review_id"]),
+            review_text=str(row["text"] or ""),
+            translated_review_text=str(row["translated_text"] or ""),
+            original_review_language=str(row["original_text_language"] or ""),
+            owner_reply_raw=str(row["owner_reply"] or ""),
+            translated_owner_reply_text=str(row["translated_owner_reply"] or ""),
+            original_owner_reply_language=str(row["original_owner_reply_language"] or ""),
+        )
 
     def _esc(value: Any) -> str:
         return html_lib.escape(str(value or ""))
@@ -312,10 +364,13 @@ def _render_review_detail(
     reviewer = _esc(reviewer_raw)
     reviewer_url = _esc(reviewer_url_raw)
     summary = _esc(row["summary"] or "")
-    review_text = _esc(row["text"] or "")
+    review_text = _esc(translated_review_text or row["text"] or "")
     owner_reply_raw = str(row["owner_reply"] or "").strip()
     owner_reply_text_raw, owner_reply_date_raw = _split_owner_reply(owner_reply_raw)
-    owner_reply = _esc(owner_reply_text_raw)
+    owner_reply_display_text = translated_owner_reply_text or owner_reply_text_raw
+    owner_reply = _esc(owner_reply_display_text)
+    review_language_badge = _translation_badge_html(original_review_language)
+    owner_reply_language_badge = _translation_badge_html(original_owner_reply_language)
     owner_reply_date = _esc(owner_reply_date_raw)
     tags_raw = str(row["tags"] or "").strip() or "misc"
     tags = _esc(tags_raw)
@@ -345,7 +400,7 @@ def _render_review_detail(
         )
     owner_reply_html = (
         '<section class="gm-owner-reply" id="owner-reply-card">'
-        '<h3>Respuesta del propietario</h3>'
+        f'<h3>Respuesta del propietario{owner_reply_language_badge}</h3>'
         f'<div class="gm-owner-reply-text" id="owner-reply-text">{owner_reply}</div>'
         f'<div class="gm-owner-reply-date" id="owner-reply-date">{owner_reply_date}</div>'
         "</section>"
@@ -356,6 +411,7 @@ def _render_review_detail(
         json.dumps(
             {
                 "owner_reply_text": owner_reply_text_raw,
+                "owner_reply_text_translated": owner_reply_display_text,
                 "owner_reply_date": owner_reply_date_raw,
             },
             ensure_ascii=False,
@@ -390,6 +446,7 @@ def _render_review_detail(
         .replace("{{rating_stars}}", rating_stars)
         .replace("{{summary_html}}", summary_html)
         .replace("{{review_text}}", review_text or "(sin texto)")
+        .replace("{{review_language_badge}}", review_language_badge)
         .replace("{{owner_reply_html}}", owner_reply_html)
         .replace("{{copy_review_payload}}", copy_review_payload)
         .replace("{{humor_score}}", _esc(row["humor_score"]))
@@ -435,7 +492,7 @@ def _fetch_review_for_notion(review_id: str) -> dict[str, Any] | None:
         row = conn.execute(
             """
             SELECT
-                r.review_id, r.reviewer_name, r.text, r.owner_reply, r.review_url,
+                r.review_id, r.reviewer_name, r.text, r.translated_text, r.original_text_language, r.owner_reply, r.translated_owner_reply, r.original_owner_reply_language, r.review_url,
                 r.humor_score, r.safety_label, r.tags, r.notion_page_id, r.notion_page_url,
                 r.notion_image_uploaded_at,
                 p.name as place_name, p.address as place_address
@@ -448,11 +505,25 @@ def _fetch_review_for_notion(review_id: str) -> dict[str, Any] | None:
     if not row:
         return None
     owner_reply_text, _ = _split_owner_reply(str(row["owner_reply"] or ""))
+    with sqlite3.connect(db_path) as conn:
+        _ensure_review_columns(conn)
+        translated_review_text, translated_owner_reply_text, original_review_language, original_owner_reply_language = _ensure_translated_texts(
+            conn,
+            review_id=str(row["review_id"]),
+            review_text=str(row["text"] or ""),
+            translated_review_text=str(row["translated_text"] or ""),
+            original_review_language=str(row["original_text_language"] or ""),
+            owner_reply_raw=str(row["owner_reply"] or ""),
+            translated_owner_reply_text=str(row["translated_owner_reply"] or ""),
+            original_owner_reply_language=str(row["original_owner_reply_language"] or ""),
+        )
     return {
         "review_id": row["review_id"],
         "reviewer_name": row["reviewer_name"] or "",
-        "review_text": row["text"] or "",
-        "owner_reply_text": owner_reply_text,
+        "review_text": translated_review_text or row["text"] or "",
+        "owner_reply_text": translated_owner_reply_text or owner_reply_text,
+        "review_language": original_review_language,
+        "owner_reply_language": original_owner_reply_language,
         "review_url": row["review_url"] or "",
         "humor_score": row["humor_score"] or 0,
         "safety_label": row["safety_label"] or "",
@@ -489,6 +560,99 @@ def _store_notion_image_uploaded(review_id: str) -> None:
             "UPDATE reviews SET notion_image_uploaded_at=?, updated_at=? WHERE review_id=?",
             (now, now, review_id),
         )
+
+
+def _store_review_translation(
+    conn: sqlite3.Connection,
+    review_id: str,
+    translated_text: str,
+    translated_owner_reply: str,
+    original_text_language: str,
+    original_owner_reply_language: str,
+) -> None:
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        """
+        UPDATE reviews
+        SET translated_text=?, translated_owner_reply=?, original_text_language=?, original_owner_reply_language=?, updated_at=?
+        WHERE review_id=?
+        """,
+        (translated_text, translated_owner_reply, original_text_language, original_owner_reply_language, now, review_id),
+    )
+
+
+def _ensure_translated_texts(
+    conn: sqlite3.Connection,
+    review_id: str,
+    review_text: str,
+    translated_review_text: str,
+    original_review_language: str,
+    owner_reply_raw: str,
+    translated_owner_reply_text: str,
+    original_owner_reply_language: str,
+) -> tuple[str, str, str, str]:
+    review_text = str(review_text or "").strip()
+    translated_review_text = str(translated_review_text or "").strip()
+    original_review_language = str(original_review_language or "").strip().lower()
+    owner_reply_text, _ = _split_owner_reply(str(owner_reply_raw or ""))
+    translated_owner_reply_text = str(translated_owner_reply_text or "").strip()
+    original_owner_reply_language = str(original_owner_reply_language or "").strip().lower()
+
+    if (
+        translated_review_text
+        and original_review_language
+        and (owner_reply_text == "" or (translated_owner_reply_text and original_owner_reply_language))
+    ):
+        return (
+            translated_review_text,
+            translated_owner_reply_text,
+            original_review_language,
+            original_owner_reply_language,
+        )
+
+    result = translate_review_to_spanish(review_text, owner_reply_text)
+    final_review_text = str(result.review_text_es or review_text).strip() or review_text
+    final_owner_reply_text = str(result.owner_reply_es or owner_reply_text).strip() or owner_reply_text
+    final_review_language = str(result.review_language or "").strip().lower()
+    final_owner_reply_language = str(result.owner_reply_language or "").strip().lower()
+    _store_review_translation(
+        conn,
+        review_id,
+        final_review_text,
+        final_owner_reply_text,
+        final_review_language,
+        final_owner_reply_language,
+    )
+    return final_review_text, final_owner_reply_text, final_review_language, final_owner_reply_language
+
+
+def _translation_badge_html(language_code: str) -> str:
+    code = str(language_code or "").strip().lower()
+    if not code or code == "es":
+        return ""
+    flag, label = _language_badge_parts(code)
+    return f' <span class="gm-translation-badge" title="Traducido del {html_lib.escape(label)}">{flag}</span>'
+
+
+def _language_badge_parts(language_code: str) -> tuple[str, str]:
+    mapping = {
+        "en": ("🇬🇧", "inglés"),
+        "fr": ("🇫🇷", "francés"),
+        "de": ("🇩🇪", "alemán"),
+        "it": ("🇮🇹", "italiano"),
+        "pt": ("🇵🇹", "portugués"),
+        "zh": ("🇨🇳", "chino"),
+        "zh-cn": ("🇨🇳", "chino"),
+        "zh-tw": ("🇹🇼", "chino tradicional"),
+        "ja": ("🇯🇵", "japonés"),
+        "ko": ("🇰🇷", "coreano"),
+        "ru": ("🇷🇺", "ruso"),
+        "ar": ("🇸🇦", "árabe"),
+        "nl": ("🇳🇱", "neerlandés"),
+        "pl": ("🇵🇱", "polaco"),
+        "tr": ("🇹🇷", "turco"),
+    }
+    return mapping.get(language_code, ("🌐", language_code.upper()))
 
 
 def _sanitize_filename(text: str) -> str:
@@ -573,7 +737,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _require_auth(self) -> bool:
+        if _is_authorized(self.headers):
+            return True
+        self._send(
+            401,
+            b"Authentication required",
+            "text/plain; charset=utf-8",
+            headers={"WWW-Authenticate": 'Basic realm="Humorous Review Scout"'},
+        )
+        return False
+
     def do_GET(self) -> None:
+        if not self._require_auth():
+            return
         if self.path == "/config_ui.css":
             css_path = ROOT / "scripts" / "config_ui.css"
             if css_path.exists():
@@ -673,6 +850,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, b"Not found", "text/plain")
 
     def do_POST(self) -> None:
+        if not self._require_auth():
+            return
         if self.path == "/api/config":
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -815,6 +994,10 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     server = HTTPServer((HOST, PORT), Handler)
     print(f"Config UI running at http://{HOST}:{PORT}")
+    if HOST == "0.0.0.0":
+        print(f"LAN URL: http://{_local_ip()}:{PORT}")
+    if _ui_auth_credentials():
+        print("Basic auth enabled for Config UI.")
     server.serve_forever()
 if __name__ == "__main__":
     main()

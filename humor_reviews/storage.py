@@ -37,6 +37,10 @@ class Review:
     safety_label: str
     safety_notes: str
     tags: str
+    translated_text: str = ""
+    translated_owner_reply: str = ""
+    original_text_language: str = ""
+    original_owner_reply_language: str = ""
 
 
 class Storage:
@@ -138,6 +142,14 @@ class Storage:
             conn.execute("ALTER TABLE reviews ADD COLUMN reviewer_profile_url TEXT")
         if "summary" not in columns:
             conn.execute("ALTER TABLE reviews ADD COLUMN summary TEXT")
+        if "translated_text" not in columns:
+            conn.execute("ALTER TABLE reviews ADD COLUMN translated_text TEXT")
+        if "translated_owner_reply" not in columns:
+            conn.execute("ALTER TABLE reviews ADD COLUMN translated_owner_reply TEXT")
+        if "original_text_language" not in columns:
+            conn.execute("ALTER TABLE reviews ADD COLUMN original_text_language TEXT")
+        if "original_owner_reply_language" not in columns:
+            conn.execute("ALTER TABLE reviews ADD COLUMN original_owner_reply_language TEXT")
         self._migrate_legacy_review_status(conn, columns)
 
     def _migrate_legacy_review_status(
@@ -205,10 +217,10 @@ class Storage:
                 """
                 INSERT INTO reviews (
                     review_id, place_id, rating, date, reviewer_name, reviewer_profile_url, text, summary, owner_reply,
-                    review_url, humor_score, humor_notes, safety_label, safety_notes, tags,
-                    created_at, updated_at
+                    translated_text, translated_owner_reply, original_text_language, original_owner_reply_language,
+                    review_url, humor_score, humor_notes, safety_label, safety_notes, tags, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(review_id) DO UPDATE SET
                     rating=excluded.rating,
                     date=excluded.date,
@@ -217,6 +229,10 @@ class Storage:
                     text=excluded.text,
                     summary=excluded.summary,
                     owner_reply=excluded.owner_reply,
+                    translated_text=excluded.translated_text,
+                    translated_owner_reply=excluded.translated_owner_reply,
+                    original_text_language=excluded.original_text_language,
+                    original_owner_reply_language=excluded.original_owner_reply_language,
                     review_url=excluded.review_url,
                     humor_score=excluded.humor_score,
                     humor_notes=excluded.humor_notes,
@@ -235,6 +251,10 @@ class Storage:
                     review.text,
                     review.summary,
                     review.owner_reply,
+                    review.translated_text,
+                    review.translated_owner_reply,
+                    review.original_text_language,
+                    review.original_owner_reply_language,
                     review.review_url,
                     review.humor_score,
                     review.humor_notes,
@@ -375,6 +395,10 @@ class Storage:
                 text=row["text"],
                 summary=row["summary"] or "",
                 owner_reply=row["owner_reply"],
+                translated_text=row["translated_text"] or "",
+                translated_owner_reply=row["translated_owner_reply"] or "",
+                original_text_language=row["original_text_language"] or "",
+                original_owner_reply_language=row["original_owner_reply_language"] or "",
                 review_url=row["review_url"],
                 humor_score=row["humor_score"],
                 humor_notes=row["humor_notes"],
@@ -408,6 +432,10 @@ class Storage:
                 text=row["text"],
                 summary=row["summary"] or "",
                 owner_reply=row["owner_reply"],
+                translated_text=row["translated_text"] or "",
+                translated_owner_reply=row["translated_owner_reply"] or "",
+                original_text_language=row["original_text_language"] or "",
+                original_owner_reply_language=row["original_owner_reply_language"] or "",
                 review_url=row["review_url"],
                 humor_score=row["humor_score"],
                 humor_notes=row["humor_notes"],
@@ -443,6 +471,10 @@ class Storage:
                 text=row["text"],
                 summary=row["summary"] or "",
                 owner_reply=row["owner_reply"],
+                translated_text=row["translated_text"] or "",
+                translated_owner_reply=row["translated_owner_reply"] or "",
+                original_text_language=row["original_text_language"] or "",
+                original_owner_reply_language=row["original_owner_reply_language"] or "",
                 review_url=row["review_url"],
                 humor_score=row["humor_score"],
                 humor_notes=row["humor_notes"],
@@ -506,6 +538,10 @@ class Storage:
                     text=row["text"],
                     summary=row["summary"] or "",
                     owner_reply=row["owner_reply"],
+                    translated_text=row["translated_text"] or "",
+                    translated_owner_reply=row["translated_owner_reply"] or "",
+                    original_text_language=row["original_text_language"] or "",
+                    original_owner_reply_language=row["original_owner_reply_language"] or "",
                     review_url=row["review_url"],
                     humor_score=row["humor_score"],
                     humor_notes=row["humor_notes"],

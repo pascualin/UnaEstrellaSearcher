@@ -112,12 +112,23 @@ def run_collection(
                 )
 
                 storage.upsert_review(review)
-                if humor.score < 20:
+                if humor.score < settings.app.humor_threshold:
                     storage.update_status(review.review_id, "rejected")
                 per_place_counts[raw.place_id] += 1
                 count += 1
                 place_count += 1
                 place_scores.append(humor.score)
+                _emit_progress(
+                    "review_scored",
+                    {
+                        "place_id": place_id,
+                        "place_name": place_name,
+                        "review_count": place_count,
+                        "total_collected": count,
+                        "score": humor.score,
+                        "reviewer_name": raw.reviewer_name,
+                    },
+                )
         except Exception as exc:
             _emit_progress(
                 "place_failed",
@@ -134,6 +145,7 @@ def run_collection(
                 "place_id": place_id,
                 "place_name": place_name,
                 "review_count": place_count,
+                "total_collected": count,
                 "scores": place_scores,
             },
         )
@@ -144,7 +156,7 @@ def run_collection(
 
 
 def run_shortlist(storage: Storage, settings, dry_run: bool = False) -> None:
-    shortlist = build_shortlist(storage, settings.app, settings.curation)
+    shortlist = build_shortlist(storage, settings.app)
     if not dry_run:
         mark_shortlist(storage, shortlist)
 
@@ -216,7 +228,7 @@ def run_rescore_llm_errors(storage: Storage, settings, limit: int | None = None)
             tags=",".join(humor.tags),
         )
         storage.upsert_review(updated)
-        if humor.score < 20:
+        if humor.score < settings.app.humor_threshold:
             storage.update_status(review.review_id, "rejected")
         rescored += 1
 
@@ -304,7 +316,7 @@ def run_themed_celebrations(
                 tags=",".join(humor.tags),
             )
             storage.upsert_review(review)
-            if humor.score < 20:
+            if humor.score < humor_threshold:
                 storage.update_status(review.review_id, "rejected")
             collected_count += 1
             if humor.score > humor_threshold:

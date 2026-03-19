@@ -196,7 +196,8 @@ def discover_places(
     for region in regions:
         for category in categories:
             query_category = _normalize_category(category)
-            query = _build_query(query_category, discovery.name_contains, region)
+            effective_location = region or _country_search_term(discovery.country)
+            query = _build_query(query_category, discovery.name_contains, effective_location)
             try:
                 results, location_used = _serpapi_maps_search(
                     query=query,
@@ -205,13 +206,13 @@ def discover_places(
                     gl=providers.serpapi_gl,
                     cache_dir=cache_dir,
                     no_cache=False,
-                    location=region or None,
+                    location=effective_location or None,
                 )
             except Exception as exc:
                 _emit_discovery_progress(
                     "search_failed",
                     {
-                        "region": region or "global",
+                        "region": effective_location or "global",
                         "category": category,
                         "query": query,
                         "error": str(exc),
@@ -221,12 +222,12 @@ def discover_places(
                 continue
             _emit_discovery_progress(
                 "search_query",
-                {"region": region or "global", "category": category, "query": query, "raw_results": len(results)},
+                {"region": effective_location or "global", "category": category, "query": query, "raw_results": len(results)},
             )
             if not results:
                 _emit_discovery_progress(
                     "no_results",
-                    {"region": region or "global", "category": category, "query": query},
+                    {"region": effective_location or "global", "category": category, "query": query},
                 )
                 time.sleep(0.6)
                 continue
@@ -289,7 +290,7 @@ def discover_places(
                 _emit_discovery_progress(
                     "no_results",
                     {
-                        "region": region or "global",
+                        "region": effective_location or "global",
                         "category": category,
                         "query": query,
                         "raw_results": len(results),
@@ -374,6 +375,26 @@ def _build_query(category: str, name_contains: str, region: str) -> str:
     if tokens:
         return f"{' '.join(tokens)} in {region}" if region else " ".join(tokens)
     return region or ""
+
+
+def _country_search_term(country: str) -> str:
+    code = str(country or "").strip().upper()
+    aliases = {
+        "US": "United States",
+        "ES": "Spain",
+        "GB": "United Kingdom",
+        "UK": "United Kingdom",
+        "FR": "France",
+        "IT": "Italy",
+        "DE": "Germany",
+        "PT": "Portugal",
+        "MX": "Mexico",
+        "AR": "Argentina",
+        "JP": "Japan",
+        "CN": "China",
+        "HK": "Hong Kong",
+    }
+    return aliases.get(code, code)
 
 
 def _build_place(

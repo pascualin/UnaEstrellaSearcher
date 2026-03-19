@@ -6,15 +6,15 @@
   <title>Config Studio · Configuración</title>
   <link rel="stylesheet" href="/config_ui.css" />
 </head>
-<body>
-  <div class="layout">
-    <aside>
-      <div class="brand">Panel de configuración</div>
+<body class="app-page">
+  <div class="layout app-layout">
+    <aside class="app-sidebar">
+      <div class="brand app-brand">Humorous Review Scout</div>
       <nav>
         <a class="nav-item active" href="/config">Configuración</a>
         <a class="nav-item" href="/db">Base de datos</a>
       </nav>
-      <div class="actions side-actions">
+      <div class="actions side-actions app-sidebar-actions">
         <button id="save">Guardar cambios</button>
         <button class="secondary" id="run-weekly">Ejecutar</button>
         <button class="secondary" id="run-dry">Ejecutar simulación</button>
@@ -22,99 +22,92 @@
       </div>
     </aside>
     <div class="content">
-      <header>
+      <header class="app-header">
+        <div class="app-eyebrow">Control</div>
         <h1>Configuración</h1>
-        <p>Edita la configuración del proyecto y guarda cambios en <code>config.yaml</code>.</p>
+        <p>Edita el pipeline, ajusta discovery y lanza ejecuciones desde una sola vista.</p>
       </header>
       <main>
         <section id="config-view" class="view active">
-          <div class="grid">
-            <div class="card">
-              <h2>Aplicación</h2>
-              <div class="row">
-                <div>
-                  <label>Objetivo semanal</label>
-                  <input id="weekly_target_count" type="number" min="1" />
-                </div>
-                <div>
-                  <label>Umbral de humor</label>
-                  <input id="humor_threshold" type="number" min="0" max="100" />
-                </div>
-              </div>
-              <div class="row">
-                <div>
-                  <label>Máx. reseñas por sitio</label>
-                  <input id="max_reviews_per_place" type="number" min="1" />
-                </div>
-                <div>
-                  <label>Máx. sitios por ejecución</label>
-                  <input id="max_places_per_run" type="number" min="1" />
+          <div class="config-dashboard">
+            <div class="config-column">
+              <div class="card app-card">
+                <h2>Aplicación</h2>
+                <div class="compact-form-grid compact-form-grid--triple">
+                  <div class="compact-field">
+                    <label>Umbral de humor</label>
+                    <input id="humor_threshold" type="number" min="0" max="100" />
+                  </div>
+                  <div class="compact-field">
+                    <label>Máx. reseñas por sitio</label>
+                    <input id="max_reviews_per_place" type="number" min="1" />
+                  </div>
+                  <div class="compact-field">
+                    <label>Máx. sitios por ejecución</label>
+                    <input id="max_places_per_run" type="number" min="1" />
+                  </div>
                 </div>
               </div>
-              <label>Idioma</label>
-              <input id="locale" type="text" />
-              <div class="toggle">
-                <input id="allow_repeat_suggestions" type="checkbox" />
-                <label for="allow_repeat_suggestions">Permitir sugerencias repetidas</label>
-              </div>
-            </div>
 
-            <div class="card">
-              <h2>Descubrimiento</h2>
-              <label>País</label>
-              <input id="country" type="text" />
-              <label>Regiones (una por línea, opcional)</label>
-              <textarea id="regions"></textarea>
-              <label>El nombre contiene</label>
-              <input id="name_contains" type="text" />
-              <label>Categorías (una por línea)</label>
-              <textarea id="categories"></textarea>
-              <div class="row">
-                <div>
-                  <label>Mínimo de reseñas</label>
-                  <input id="min_total_reviews" type="number" min="0" />
-                </div>
-                <div>
-                  <label>Antigüedad máxima (días)</label>
-                  <input id="require_recent_days" type="number" min="1" />
+              <div class="card app-card">
+                <h2>Puntuación (OpenAI)</h2>
+                <div class="compact-form-grid">
+                  <div class="compact-field compact-field--full">
+                    <label>Modelo</label>
+                    <input id="scoring_model" type="text" />
+                  </div>
+                  <div class="compact-field compact-field--full">
+                    <label>Prompt</label>
+                    <textarea id="prompt"></textarea>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div class="card">
-              <h2>Puntuación (OpenAI)</h2>
-              <label>Modelo</label>
-              <input id="scoring_model" type="text" />
-              <div class="row">
-                <div>
-                  <label>Temperatura</label>
-                  <input id="temperature" type="number" step="0.1" min="0" max="2" />
-                </div>
-                <div>
-                  <label>Máx. tokens de salida</label>
-                  <input id="max_output_tokens" type="number" min="320" />
+            <div class="config-column">
+              <div class="card app-card">
+                <h2>Descubrimiento</h2>
+                <div class="compact-form-grid compact-form-grid--split">
+                  <div class="compact-field">
+                    <label>País</label>
+                    <input id="country" type="text" />
+                  </div>
+                  <div class="compact-field">
+                    <label>Reseñas mínimas en el sitio</label>
+                    <input id="min_total_reviews" type="number" min="0" />
+                  </div>
+                  <div class="compact-field compact-field--full">
+                    <label>El nombre contiene</label>
+                    <input id="name_contains" type="text" />
+                  </div>
+                  <div class="compact-field">
+                    <label>Regiones (una por línea, opcional)</label>
+                    <textarea id="regions"></textarea>
+                  </div>
+                  <div class="compact-field">
+                    <label>Categorías (una por línea)</label>
+                    <textarea id="categories"></textarea>
+                  </div>
                 </div>
               </div>
-              <label>Prompt</label>
-              <textarea id="prompt"></textarea>
-            </div>
 
-            <div class="card">
-              <h2>Curación</h2>
-              <label>Límites por tema (formato: tag=valor por línea)</label>
-              <textarea id="theme_limits"></textarea>
-            </div>
-            <div class="card">
-              <h2>Ejecución en vivo</h2>
-              <p class="hint">Seguimiento en tiempo real mientras se ejecuta la tarea semanal.</p>
-              <div class="meta meta-stack">
-                <span><strong>Sitios encontrados:</strong> <span id="live-sites">0</span></span>
-                <span><strong>Sitio actual:</strong> <span id="live-place">-</span></span>
-                <span><strong>Reseñas encontradas:</strong> <span id="live-count">0</span></span>
-              </div>
-              <div class="review-text">
-                <div class="label">Puntuaciones</div>
-                <div class="block" id="live-scores">-</div>
+              <div class="card app-card app-card-accent">
+                <h2>Ejecución en vivo</h2>
+                <p class="hint">Seguimiento en tiempo real mientras se ejecuta la tarea semanal.</p>
+                <div class="meta meta-stack">
+                  <span><strong>Estado:</strong> <span id="live-stage">En espera</span></span>
+                  <span><strong>Sitios encontrados:</strong> <span id="live-sites">0</span></span>
+                  <span><strong>Sitio actual:</strong> <span id="live-place">-</span></span>
+                  <span><strong>Sitios analizados:</strong> <span id="live-processed-sites">0</span></span>
+                  <span><strong>Sitios pendientes:</strong> <span id="live-remaining-sites">0</span></span>
+                  <span><strong>Reseñas inspeccionadas:</strong> <span id="live-count">0</span></span>
+                  <span><strong>Superan el umbral:</strong> <span id="live-above-threshold">0</span></span>
+                  <span><strong>Tiempo estimado restante:</strong> <span id="live-eta">-</span></span>
+                </div>
+                <div class="review-text">
+                  <div class="label">Últimas puntuaciones</div>
+                  <div class="block" id="live-scores">-</div>
+                </div>
               </div>
             </div>
           </div>
@@ -134,13 +127,26 @@
   <script>
     const byId = (id) => document.getElementById(id);
     const status = byId("status");
+    const liveStage = byId("live-stage");
     const liveSites = byId("live-sites");
     const livePlace = byId("live-place");
+    const liveProcessedSites = byId("live-processed-sites");
+    const liveRemainingSites = byId("live-remaining-sites");
     const liveCount = byId("live-count");
+    const liveAboveThreshold = byId("live-above-threshold");
+    const liveEta = byId("live-eta");
     const liveScores = byId("live-scores");
     let progressOffset = 0;
     let progressTimer = null;
     let runFinished = false;
+    let progressBootstrapped = false;
+    const progressState = {
+      collectedReviews: 0,
+      aboveThreshold: 0,
+      processedSites: 0,
+      startedAtMs: 0,
+      lastScoreText: "",
+    };
     const noResultsModal = byId("no-results-modal");
     const noResultsText = byId("no-results-text");
 
@@ -152,94 +158,91 @@
       return text.split("\n").map(s => s.trim()).filter(Boolean);
     }
 
-    function themeLimitsToText(obj) {
-      const lines = [];
-      for (const [k, v] of Object.entries(obj || {})) {
-        lines.push(`${k}=${v}`);
-      }
-      return lines.join("\n");
+    function formatEta(ms) {
+      if (!Number.isFinite(ms) || ms <= 0) return "Menos de 1 min";
+      const totalSeconds = Math.round(ms / 1000);
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      if (minutes <= 0) return `${seconds}s`;
+      if (minutes < 60) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+      const hours = Math.floor(minutes / 60);
+      const remMinutes = minutes % 60;
+      return remMinutes ? `${hours}h ${remMinutes}m` : `${hours}h`;
     }
 
-    function textToThemeLimits(text) {
-      const out = {};
-      text.split("\n").forEach(line => {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.includes("=")) return;
-        const [k, v] = trimmed.split("=", 2);
-        out[k.trim()] = Number(v.trim());
-      });
-      return out;
+    function updateEta() {
+      const discoveredSites = Number(liveSites.textContent || 0);
+      const processedSites = progressState.processedSites;
+      const remainingSites = Math.max(0, discoveredSites - processedSites);
+      liveProcessedSites.textContent = String(processedSites);
+      liveRemainingSites.textContent = String(remainingSites);
+      if (!progressState.startedAtMs || processedSites <= 0 || remainingSites <= 0) {
+        liveEta.textContent = remainingSites === 0 && processedSites > 0 ? "Completando" : "-";
+        return;
+      }
+      const elapsedMs = Date.now() - progressState.startedAtMs;
+      const avgPerSiteMs = elapsedMs / processedSites;
+      liveEta.textContent = formatEta(avgPerSiteMs * remainingSites);
     }
 
     async function loadConfig() {
       const res = await fetch("/api/config");
       const cfg = await res.json();
-      byId("weekly_target_count").value = cfg.app.weekly_target_count || 0;
       byId("humor_threshold").value = cfg.app.humor_threshold || 0;
       byId("max_reviews_per_place").value = cfg.app.max_reviews_per_place || 0;
       byId("max_places_per_run").value = cfg.app.max_places_per_run || 0;
-      byId("locale").value = cfg.app.locale || "en";
-      byId("allow_repeat_suggestions").checked = !!cfg.app.allow_repeat_suggestions;
 
       byId("country").value = cfg.discovery.country || "";
       byId("regions").value = listToText(cfg.discovery.regions);
       byId("name_contains").value = cfg.discovery.name_contains || "";
       byId("categories").value = listToText(cfg.discovery.categories);
       byId("min_total_reviews").value = cfg.discovery.min_total_reviews || 0;
-      byId("require_recent_days").value = cfg.discovery.require_recent_days || 0;
 
       byId("scoring_model").value = cfg.scoring.model || "";
-      byId("temperature").value = cfg.scoring.temperature || 0;
-      byId("max_output_tokens").value = cfg.scoring.max_output_tokens || 0;
       byId("prompt").value = cfg.scoring.prompt || "";
-
-      byId("theme_limits").value = themeLimitsToText(cfg.curation.theme_limits);
       status.textContent = "";
     }
 
     async function saveConfig() {
+      const normalizedCountry = byId("country").value.trim().toUpperCase();
       const payload = {
         app: {
           output_dir: "out",
           data_dir: "data",
-          weekly_target_count: Number(byId("weekly_target_count").value),
           humor_threshold: Number(byId("humor_threshold").value),
           max_reviews_per_place: Number(byId("max_reviews_per_place").value),
           max_places_per_run: Number(byId("max_places_per_run").value),
-          allow_repeat_suggestions: byId("allow_repeat_suggestions").checked,
-          locale: byId("locale").value.trim(),
+          allow_repeat_suggestions: false,
+          locale: "es",
         },
         discovery: {
           provider: "serpapi_maps",
-          country: byId("country").value.trim(),
+          country: normalizedCountry,
           regions: textToList(byId("regions").value),
           name_contains: byId("name_contains").value.trim(),
           categories: textToList(byId("categories").value),
           min_total_reviews: Number(byId("min_total_reviews").value),
-          require_recent_days: Number(byId("require_recent_days").value),
+          require_recent_days: 3650,
         },
         providers: {
           serpapi: {
             api_key_env: "SERPAPI_API_KEY",
             hl: "es",
-            gl: "es",
+            gl: (normalizedCountry || "ES").toLowerCase(),
           }
         },
         scoring: {
           provider: "openai",
           model: byId("scoring_model").value.trim(),
           api_key_env: "OPENAI_API_KEY",
-          temperature: Number(byId("temperature").value),
-          max_output_tokens: Number(byId("max_output_tokens").value),
+          temperature: 0.2,
+          max_output_tokens: 320,
           prompt: byId("prompt").value,
         },
         safety: {
           pii_patterns: [],
           sensitive_keywords: [],
           accusation_keywords: [],
-        },
-        curation: {
-          theme_limits: textToThemeLimits(byId("theme_limits").value),
         }
       };
       const res = await fetch("/api/config", {
@@ -257,10 +260,7 @@
     async function runWeekly() {
       status.textContent = "Ejecutando pipeline...";
       runFinished = false;
-      liveSites.textContent = "0";
-      livePlace.textContent = "-";
-      liveCount.textContent = "0";
-      liveScores.textContent = "-";
+      resetLiveProgress();
       status.classList.add("banner");
       progressOffset = 0;
       const res = await fetch("/api/run-weekly", { method: "POST" });
@@ -290,11 +290,24 @@
       noResultsModal.setAttribute("aria-hidden", "true");
     }
 
-    async function pollProgress() {
-      const res = await fetch(`/api/progress?offset=${progressOffset}`);
-      if (!res.ok) return;
-      const payload = await res.json();
-      progressOffset = payload.next_offset || progressOffset;
+    function resetLiveProgress() {
+      progressState.collectedReviews = 0;
+      progressState.aboveThreshold = 0;
+      progressState.processedSites = 0;
+      progressState.startedAtMs = Date.now();
+      progressState.lastScoreText = "";
+      liveStage.textContent = "Iniciando";
+      liveSites.textContent = "0";
+      livePlace.textContent = "-";
+      liveProcessedSites.textContent = "0";
+      liveRemainingSites.textContent = byId("max_places_per_run").value || "0";
+      liveCount.textContent = "0";
+      liveAboveThreshold.textContent = "0";
+      liveEta.textContent = "-";
+      liveScores.textContent = "Esperando primeras puntuaciones";
+    }
+
+    function applyProgressPayload(payload) {
       (payload.lines || []).forEach((line) => {
         let event;
         try {
@@ -302,33 +315,88 @@
         } catch (err) {
           return;
         }
+        if (event.event === "search_query") {
+          const bits = [event.category || "", event.region || ""].filter(Boolean);
+          liveStage.textContent = bits.length ? `Buscando: ${bits.join(" · ")}` : "Buscando sitios";
+        }
+        if (event.event === "discovered_place") {
+          liveStage.textContent = "Descubriendo sitios";
+          livePlace.textContent = event.place_name || event.place_id || livePlace.textContent;
+        }
         if (event.event === "sites_found") {
           liveSites.textContent = event.count ?? liveSites.textContent;
+          updateEta();
         }
         if (event.event === "place_start") {
+          liveStage.textContent = "Recopilando reseñas";
           livePlace.textContent = event.place_name || event.place_id || "-";
-          liveCount.textContent = "0";
-          liveScores.textContent = "-";
+          if (!progressState.lastScoreText) {
+            liveScores.textContent = "Buscando reseñas nuevas para puntuar";
+          }
+        }
+        if ((event.event === "api_cache_hit" || event.event === "api_response") && event.api === "google_maps_reviews") {
+          liveStage.textContent = "Leyendo reseñas";
+          progressState.collectedReviews += Number(event.review_count || 0);
+          liveCount.textContent = String(progressState.collectedReviews);
+          if (!progressState.lastScoreText) {
+            liveScores.textContent = "Sin puntuaciones nuevas todavía";
+          }
+        }
+        if (event.event === "review_scored") {
+          liveStage.textContent = "Puntuando reseñas";
+          livePlace.textContent = event.place_name || event.place_id || livePlace.textContent;
+          const reviewerName = String(event.reviewer_name || "").trim();
+          const numericScore = Number(event.score || 0);
+          const threshold = Number(byId("humor_threshold").value || 0);
+          if (numericScore >= threshold) {
+            progressState.aboveThreshold += 1;
+            liveAboveThreshold.textContent = String(progressState.aboveThreshold);
+          }
+          const scoreLabel = `#${numericScore}`;
+          progressState.lastScoreText = reviewerName ? `${reviewerName}: ${scoreLabel}` : scoreLabel;
+          liveScores.textContent = progressState.lastScoreText;
         }
         if (event.event === "place_done") {
-          liveCount.textContent = event.review_count ?? "0";
+          progressState.processedSites += 1;
+          updateEta();
           if (Array.isArray(event.scores) && event.scores.length) {
-            liveScores.textContent = event.scores.join(", ");
-          } else {
-            liveScores.textContent = "-";
+            progressState.lastScoreText = event.scores.map((score) => `#${score}`).join(", ");
+            liveScores.textContent = progressState.lastScoreText;
+          } else if (!progressState.lastScoreText) {
+            liveScores.textContent = "Sin reseñas nuevas puntuadas en este sitio";
           }
+        }
+        if (event.event === "place_failed") {
+          progressState.processedSites += 1;
+          updateEta();
+          liveStage.textContent = "Error en un sitio";
+          livePlace.textContent = event.place_name || event.place_id || livePlace.textContent;
+          status.textContent = `Falló la recogida en ${event.place_name || event.place_id || "un sitio"}.`;
+        }
+        if (event.event === "search_failed") {
+          liveStage.textContent = "Error en búsqueda";
+          status.textContent = `Falló una búsqueda para ${event.category || "la categoría"} en ${event.region || "la región"}.`;
         }
         if (event.event === "run_complete") {
           runFinished = true;
-          status.textContent = `Finalizado. Sitios: ${event.discovered}, reseñas: ${event.collected}`;
+          liveStage.textContent = "Completado";
+          status.textContent = `Finalizado. Sitios: ${event.discovered}, reseñas nuevas: ${event.collected}`;
+          liveCount.textContent = String(progressState.collectedReviews);
+          liveSites.textContent = String(event.discovered ?? liveSites.textContent);
+          progressState.processedSites = Number(event.discovered ?? progressState.processedSites);
+          updateEta();
+          liveEta.textContent = "Completado";
           if (progressTimer) clearInterval(progressTimer);
         }
         if (event.event === "run_started") {
           runFinished = false;
+          resetLiveProgress();
+          liveStage.textContent = "Ejecutando";
           status.textContent = "Ejecutando pipeline...";
         }
         if (event.event === "run_failed") {
           runFinished = true;
+          liveStage.textContent = "Error";
           status.textContent = "Falló la ejecución. Revisa el log.";
           if (progressTimer) clearInterval(progressTimer);
         }
@@ -336,15 +404,63 @@
           const text = String(event.text || "");
           const isBenignWarning = text.includes("NotOpenSSLWarning");
           if (!runFinished && !isBenignWarning) {
+            liveStage.textContent = "Con avisos";
             status.textContent = "Aviso durante la ejecución. Revisa el log.";
           }
         }
         if (event.event === "no_results") {
           const region = event.region || "la región";
           const category = event.category || "la categoría";
-          showNoResults(`No se encontraron resultados para \"${category}\" en ${region}. Revisa categorías o región.`);
+          if (event.reason === "filtered_out") {
+            const bits = [];
+            const rawResults = Number(event.raw_results || 0);
+            if (rawResults > 0) {
+              bits.push(`La API devolvió ${rawResults} sitios, pero todos se descartaron después.`);
+            }
+            const skippedRegion = Number(event.skipped_region || 0);
+            const skippedMinReviews = Number(event.skipped_min_reviews || 0);
+            const skippedRecent = Number(event.skipped_recent || 0);
+            const skippedNoIds = Number(event.skipped_no_ids || 0);
+            if (skippedRegion > 0) {
+              bits.push(`${skippedRegion} fuera de la región indicada.`);
+            }
+            if (skippedMinReviews > 0) {
+              bits.push(`${skippedMinReviews} por no llegar al mínimo de reseñas.`);
+            }
+            if (skippedRecent > 0) {
+              bits.push(`${skippedRecent} por antigüedad de reseñas.`);
+            }
+            if (skippedNoIds > 0) {
+              bits.push(`${skippedNoIds} por datos incompletos.`);
+            }
+            const detail = bits.length ? ` ${bits.join(" ")}` : "";
+            showNoResults(`No quedaron resultados válidos para "${category}" en ${region}.${detail}`);
+          } else {
+            showNoResults(`La API no encontró resultados para "${category}" en ${region}. Revisa la categoría o prueba con otra región.`);
+          }
         }
       });
+    }
+
+    async function pollProgress() {
+      const res = await fetch(`/api/progress?offset=${progressOffset}`);
+      if (!res.ok) return;
+      const payload = await res.json();
+      progressOffset = payload.next_offset || progressOffset;
+      applyProgressPayload(payload);
+    }
+
+    async function bootstrapProgress() {
+      const res = await fetch("/api/progress?offset=0");
+      if (!res.ok) return;
+      const payload = await res.json();
+      progressOffset = payload.next_offset || 0;
+      runFinished = true;
+      applyProgressPayload(payload);
+      progressBootstrapped = true;
+      if (!runFinished && !progressTimer) {
+        progressTimer = setInterval(pollProgress, 1200);
+      }
     }
 
     byId("save").addEventListener("click", saveConfig);
@@ -355,7 +471,11 @@
       if (event.target === noResultsModal) closeNoResults();
     });
 
-    loadConfig();
+    loadConfig().then(() => {
+      if (!progressBootstrapped) {
+        bootstrapProgress();
+      }
+    });
   </script>
 </body>
 </html>
