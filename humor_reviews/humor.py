@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Dict
 
@@ -33,7 +34,8 @@ def score_review(
         )
 
     client = OpenAI(api_key=api_key)
-    prompt = settings.prompt.format(
+    prompt = _render_prompt(
+        settings.prompt,
         review_text=(text or "").strip(),
         owner_reply=(owner_reply or "").strip(),
         rating=rating,
@@ -70,30 +72,7 @@ def score_review(
     )
 
     try:
-        response = client.chat.completions.create(
-            model=request_payload["model"],
-            messages=request_payload["messages"],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "humor_score",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "score": {"type": "integer", "minimum": 0, "maximum": 100},
-                            "notes": {"type": "string"},
-                            "tags": {"type": "array", "items": {"type": "string"}},
-                            "summary": {"type": "string"},
-                        },
-                        "required": ["score", "notes", "tags", "summary"],
-                        "additionalProperties": False,
-                    },
-                    "strict": True,
-                },
-            },
-            temperature=request_payload["temperature"],
-            max_completion_tokens=request_payload["max_completion_tokens"],
-        )
+        response = _create_completion_with_retries(client, request_payload)
         content = _extract_message_content(response)
         payload = _parse_payload(content)
         emit_api_log(
@@ -257,6 +236,70 @@ def _find_text_in_mapping(value: Any) -> str:
             if found:
                 return found
     return ""
+
+
+def _render_prompt(template: str, review_text: str, owner_reply: str, rating: int) -> str:
+    rendered = str(template or "")
+    rendered = rendered.replace("{review_text}", review_text)
+    rendered = rendered.replace("{owner_reply}", owner_reply)
+    rendered = rendered.replace("{rating}", str(rating))
+    return rendered
+
+
+def _create_completion_with_retries(client: OpenAI, request_payload: dict[str, Any]) -> Any:
+    attempts = 3
+    delay_seconds = 1.5
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return client.chat.completions.create(
+                model=request_payload["model"],
+                messages=request_payload["messages"],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "humor_score",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "score": {"type": "integer", "minimum": 0, "maximum": 100},
+                                "notes": {"type": "string"},
+                                "tags": {"type": "array", "items": {"type": "string"}},
+                                "summary": {"type": "string"},
+                            },
+                            "required": ["score", "notes", "tags", "summary"],
+                            "additionalProperties": False,
+                        },
+                        "strict": True,
+                    },
+                },
+                temperature=request_payload["temperature"],
+                max_completion_tokens=request_payload["max_completion_tokens"],
+            )
+        except Exception as exc:  # pragma: no cover - network/runtime issues
+            last_exc = exc
+            if attempt >= attempts or not _is_retryable_openai_error(exc):
+                raise
+            time.sleep(delay_seconds * attempt)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("OpenAI completion failed without an exception.")
+
+
+def _is_retryable_openai_error(exc: Exception) -> bool:
+    name = exc.__class__.__name__
+    if name in {"APIConnectionError", "APITimeoutError", "RateLimitError", "InternalServerError"}:
+        return True
+    message = str(exc).lower()
+    retry_markers = [
+        "connection error",
+        "timed out",
+        "timeout",
+        "rate limit",
+        "temporarily unavailable",
+        "server error",
+    ]
+    return any(marker in message for marker in retry_markers)
 
 
 def _extract_json_object(value: str) -> str:

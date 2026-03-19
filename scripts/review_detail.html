@@ -65,6 +65,7 @@
             </div>
 
             <div class="gm-review-text" id="review-text">{{review_text}}</div>
+            <div class="gm-translation-row">{{review_language_badge}}</div>
 
             {{owner_reply_html}}
           </section>
@@ -322,7 +323,7 @@
       } catch (error) {
         payload = {};
       }
-      const ownerReplyText = cleanCopiedValue(payload.owner_reply_text) || cleanCopiedValue(document.getElementById("owner-reply-text")?.textContent);
+      const ownerReplyText = cleanCopiedValue(payload.owner_reply_text_translated) || cleanCopiedValue(payload.owner_reply_text) || cleanCopiedValue(document.getElementById("owner-reply-text")?.textContent);
       const ownerReplyDate = cleanCopiedValue(payload.owner_reply_date) || cleanCopiedValue(document.getElementById("owner-reply-date")?.textContent);
       const rating = Number(copyReviewImageButton?.dataset.rating || "0");
       const clipboardText = buildClipboardText(reviewerName, reviewText, ownerReplyText);
@@ -501,7 +502,7 @@
         }
         const reviewerName = (document.getElementById("reviewer-name")?.textContent || "").trim();
         const reviewText = (document.getElementById("review-text")?.textContent || "").trim();
-        const ownerReplyText = cleanCopiedValue(payload.owner_reply_text) || cleanCopiedValue(document.getElementById("owner-reply-text")?.textContent);
+        const ownerReplyText = cleanCopiedValue(payload.owner_reply_text_translated) || cleanCopiedValue(payload.owner_reply_text) || cleanCopiedValue(document.getElementById("owner-reply-text")?.textContent);
         const clipboardText = buildClipboardText(reviewerName, reviewText, ownerReplyText);
         await navigator.clipboard.writeText(clipboardText);
         copyFeedback.textContent = "Texto copiado al portapapeles.";

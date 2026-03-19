@@ -258,7 +258,7 @@ def _append_image_block(token: str, page_id: str, upload_id: str) -> None:
                 "object": "block",
                 "type": "image",
                 "image": {
-                    "caption": _rich_text("Captura de la reseña"),
+                    "caption": [],
                     "type": "file_upload",
                     "file_upload": {"id": upload_id},
                 },

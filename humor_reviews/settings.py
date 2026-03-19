@@ -11,7 +11,6 @@ import yaml
 class AppSettings:
     output_dir: Path
     data_dir: Path
-    weekly_target_count: int
     humor_threshold: int
     max_reviews_per_place: int
     max_places_per_run: int
@@ -55,18 +54,12 @@ class SafetySettings:
 
 
 @dataclass
-class CurationSettings:
-    theme_limits: Dict[str, int]
-
-
-@dataclass
 class Settings:
     app: AppSettings
     discovery: DiscoverySettings
     providers: ProviderSettings
     scoring: ScoringSettings
     safety: SafetySettings
-    curation: CurationSettings
 
 
 def _load_yaml(path: Path) -> Dict[str, Any]:
@@ -89,12 +82,9 @@ def load_settings(path: str | Path = "config.yaml") -> Settings:
     providers_raw = providers_root.get("serpapi", {})
     scoring_raw = raw.get("scoring", {})
     safety_raw = raw.get("safety", {})
-    curation_raw = raw.get("curation", {})
-
     app = AppSettings(
         output_dir=Path(app_raw.get("output_dir", "out")),
         data_dir=Path(app_raw.get("data_dir", "data")),
-        weekly_target_count=int(app_raw.get("weekly_target_count", 40)),
         humor_threshold=int(app_raw.get("humor_threshold", 55)),
         max_reviews_per_place=int(app_raw.get("max_reviews_per_place", 25)),
         max_places_per_run=int(app_raw.get("max_places_per_run", 40)),
@@ -112,10 +102,11 @@ def load_settings(path: str | Path = "config.yaml") -> Settings:
         require_recent_days=int(discovery_raw.get("require_recent_days", 120)),
     )
 
+    country_code = str(discovery_raw.get("country", "US")).strip().lower() or "us"
     providers = ProviderSettings(
         serpapi_api_key_env=str(providers_raw.get("api_key_env", "SERPAPI_API_KEY")),
         serpapi_hl=str(providers_raw.get("hl", "es")),
-        serpapi_gl=str(providers_raw.get("gl", "us")),
+        serpapi_gl=country_code,
     )
 
     scoring = ScoringSettings(
@@ -150,15 +141,10 @@ def load_settings(path: str | Path = "config.yaml") -> Settings:
         accusation_keywords=list(safety_raw.get("accusation_keywords", [])),
     )
 
-    curation = CurationSettings(
-        theme_limits=dict(curation_raw.get("theme_limits", {})),
-    )
-
     return Settings(
         app=app,
         discovery=discovery,
         providers=providers,
         scoring=scoring,
         safety=safety,
-        curation=curation,
     )

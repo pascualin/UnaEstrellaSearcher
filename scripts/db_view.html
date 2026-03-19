@@ -6,32 +6,33 @@
   <title>Config Studio · Base de datos</title>
   <link rel="stylesheet" href="/config_ui.css" />
 </head>
-<body>
-  <div class="layout">
-    <aside>
-      <div class="brand">Panel de configuración</div>
+<body class="app-page">
+  <div class="layout app-layout">
+    <aside class="app-sidebar">
+      <div class="brand app-brand">Humorous Review Scout</div>
       <nav>
         <a class="nav-item" href="/config">Configuración</a>
         <a class="nav-item active" href="/db">Base de datos</a>
       </nav>
-      <div class="actions side-actions">
+      <div class="actions side-actions app-sidebar-actions">
         <button class="secondary" id="db-refresh">Actualizar</button>
       </div>
     </aside>
     <div class="content">
-      <header>
+      <header class="app-header">
+        <div class="app-eyebrow">Moderación</div>
         <h1>Base de datos</h1>
-        <p>Vista rápida de las reseñas almacenadas.</p>
+        <p>Revisa pendientes, consulta métricas y entra al detalle con el mismo orden de trabajo.</p>
       </header>
       <main>
         <section id="db-view" class="view active">
-          <div class="card db-grid">
-            <div class="row" style="align-items: center;">
+          <div class="card app-card db-grid">
+            <div class="row app-toolbar" style="align-items: center;">
               <div>
                 <h2>Resumen</h2>
                 <p class="hint">Resumen de ingestión y contenido.</p>
               </div>
-              <div class="db-controls" style="margin-left: auto;">
+              <div class="db-controls app-filter-bar" style="margin-left: auto;">
                 <label class="hint" for="review-sort">Ordenar por</label>
                 <select id="review-sort">
                   <option value="humor_score">Puntuación de humor</option>
