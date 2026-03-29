@@ -18,6 +18,15 @@ from .api_logging import emit_api_log
 from .settings import DiscoverySettings, ProviderSettings
 from .storage import Place
 
+GENERAL_SEARCH_SEEDS = [
+    "restaurant",
+    "bar",
+    "cafe",
+    "museum",
+    "tourist attraction",
+    "hotel",
+]
+
 
 @dataclass
 class DiscoveredPlace:
@@ -190,7 +199,7 @@ def discover_places(
         )
 
     min_recent_date = datetime.utcnow() - timedelta(days=discovery.require_recent_days)
-    categories = discovery.categories or [""]
+    categories = _effective_categories(discovery.categories)
 
     regions = discovery.regions or [""]
     for region in regions:
@@ -213,7 +222,7 @@ def discover_places(
                     "search_failed",
                     {
                         "region": effective_location or "global",
-                        "category": category,
+                        "category": _progress_category_label(category, query),
                         "query": query,
                         "error": str(exc),
                     },
@@ -222,12 +231,21 @@ def discover_places(
                 continue
             _emit_discovery_progress(
                 "search_query",
-                {"region": effective_location or "global", "category": category, "query": query, "raw_results": len(results)},
+                {
+                    "region": effective_location or "global",
+                    "category": _progress_category_label(category, query),
+                    "query": query,
+                    "raw_results": len(results),
+                },
             )
             if not results:
                 _emit_discovery_progress(
                     "no_results",
-                    {"region": effective_location or "global", "category": category, "query": query},
+                    {
+                        "region": effective_location or "global",
+                        "category": _progress_category_label(category, query),
+                        "query": query,
+                    },
                 )
                 time.sleep(0.6)
                 continue
@@ -249,7 +267,7 @@ def discover_places(
                         "region_filtered_out",
                         {
                             "region": region,
-                            "category": category,
+                            "category": _progress_category_label(category, query),
                             "query": query,
                             "place_name": place_raw.get("title") or place_raw.get("name") or "Unknown",
                             "address": place_raw.get("address") or place_raw.get("formatted_address") or "",
@@ -276,7 +294,7 @@ def discover_places(
                     data_id=data_id,
                     name=place_raw.get("title") or place_raw.get("name") or "Unknown",
                     address=place_raw.get("address") or place_raw.get("formatted_address") or "",
-                    category=category,
+                    category=_stored_category(category),
                     total_reviews=total_reviews,
                     last_review_date=last_review_date,
                     provider="serpapi",
@@ -291,7 +309,7 @@ def discover_places(
                     "no_results",
                     {
                         "region": effective_location or "global",
-                        "category": category,
+                        "category": _progress_category_label(category, query),
                         "query": query,
                         "raw_results": len(results),
                         "reason": "filtered_out",
@@ -335,7 +353,7 @@ def discover_places_for_queries(
                 "search_failed",
                 {
                     "region": item.region or "global",
-                    "category": item.category,
+                    "category": _progress_category_label(item.category, item.query),
                     "query": item.query,
                     "error": str(exc),
                 },
@@ -346,7 +364,7 @@ def discover_places_for_queries(
             "search_query",
             {
                 "region": item.region or "global",
-                "category": item.category,
+                "category": _progress_category_label(item.category, item.query),
                 "query": item.query,
                 "raw_results": len(results),
             },
@@ -370,11 +388,40 @@ def _normalize_category(category: str) -> str:
     return str(category or "").strip().lower().replace("_", " ")
 
 
+def _effective_categories(categories: list[str] | None) -> list[str]:
+    cleaned = [str(item or "").strip() for item in (categories or []) if str(item or "").strip()]
+    if cleaned:
+        return cleaned
+    return GENERAL_SEARCH_SEEDS.copy()
+
+
+def _stored_category(category: str) -> str:
+    value = str(category or "").strip()
+    if value:
+        return value
+    return "general"
+
+
 def _build_query(category: str, name_contains: str, region: str) -> str:
-    tokens = [part for part in [category.strip(), str(name_contains or "").strip()] if part]
+    category = str(category or "").strip()
+    name_contains = str(name_contains or "").strip()
+    region = str(region or "").strip()
+    tokens = [part for part in [category, name_contains] if part]
     if tokens:
         return f"{' '.join(tokens)} in {region}" if region else " ".join(tokens)
-    return region or ""
+    if region:
+        return f"places in {region}"
+    return "places"
+
+
+def _progress_category_label(category: str, query: str) -> str:
+    label = str(category or "").strip()
+    if label:
+        return label
+    query_text = str(query or "").strip()
+    if query_text and not query_text.lower().startswith("places in "):
+        return query_text
+    return "búsqueda general"
 
 
 def _country_search_term(country: str) -> str:

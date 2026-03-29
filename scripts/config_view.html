@@ -158,6 +158,18 @@
       return text.split("\n").map(s => s.trim()).filter(Boolean);
     }
 
+    function describeSearchCategory(event) {
+      const categories = textToList(byId("categories").value || "");
+      if (categories.length === 0) return "búsqueda general";
+      const category = String(event?.category || "").trim();
+      if (category) return category;
+      const query = String(event?.query || "").trim();
+      if (query && !query.toLowerCase().startsWith("places in ")) return query;
+      if (categories.length === 1) return categories[0];
+      if (categories.length > 1) return categories.join(", ");
+      return "búsqueda general";
+    }
+
     function formatEta(ms) {
       if (!Number.isFinite(ms) || ms <= 0) return "Menos de 1 min";
       const totalSeconds = Math.round(ms / 1000);
@@ -375,7 +387,7 @@
         }
         if (event.event === "search_failed") {
           liveStage.textContent = "Error en búsqueda";
-          status.textContent = `Falló una búsqueda para ${event.category || "la categoría"} en ${event.region || "la región"}.`;
+          status.textContent = `Falló una búsqueda para ${describeSearchCategory(event)} en ${event.region || "la región"}.`;
         }
         if (event.event === "run_complete") {
           runFinished = true;
@@ -410,7 +422,8 @@
         }
         if (event.event === "no_results") {
           const region = event.region || "la región";
-          const category = event.category || "la categoría";
+          const category = describeSearchCategory(event);
+          const isGeneralSearch = category === "búsqueda general";
           if (event.reason === "filtered_out") {
             const bits = [];
             const rawResults = Number(event.raw_results || 0);
@@ -436,7 +449,10 @@
             const detail = bits.length ? ` ${bits.join(" ")}` : "";
             showNoResults(`No quedaron resultados válidos para "${category}" en ${region}.${detail}`);
           } else {
-            showNoResults(`La API no encontró resultados para "${category}" en ${region}. Revisa la categoría o prueba con otra región.`);
+            const advice = isGeneralSearch
+              ? "Prueba con otra región o añade una categoría concreta para orientar mejor la búsqueda."
+              : "Revisa la categoría o prueba con otra región.";
+            showNoResults(`La API no encontró resultados para "${category}" en ${region}. ${advice}`);
           }
         }
       });

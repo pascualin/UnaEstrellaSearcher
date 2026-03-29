@@ -1,7 +1,7 @@
 app:
   output_dir: out
   data_dir: data
-  humor_threshold: 50
+  humor_threshold: 70
   max_reviews_per_place: 20
   max_places_per_run: 10
   allow_repeat_suggestions: false
@@ -9,7 +9,8 @@ app:
 discovery:
   provider: serpapi_maps
   country: ES
-  regions: []
+  regions:
+  - Valencia, Spain
   name_contains: ''
   categories: []
   min_total_reviews: 500
