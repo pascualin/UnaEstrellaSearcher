@@ -41,6 +41,7 @@ class Review:
     translated_owner_reply: str = ""
     original_text_language: str = ""
     original_owner_reply_language: str = ""
+    submitted_by: str = ""
 
 
 class Storage:
@@ -138,6 +139,8 @@ class Storage:
 
     def _ensure_review_columns(self, conn: sqlite3.Connection) -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()}
+        if "submitted_by" not in columns:
+            conn.execute("ALTER TABLE reviews ADD COLUMN submitted_by TEXT")
         if "reviewer_profile_url" not in columns:
             conn.execute("ALTER TABLE reviews ADD COLUMN reviewer_profile_url TEXT")
         if "summary" not in columns:
@@ -216,15 +219,16 @@ class Storage:
             conn.execute(
                 """
                 INSERT INTO reviews (
-                    review_id, place_id, rating, date, reviewer_name, reviewer_profile_url, text, summary, owner_reply,
+                    review_id, place_id, rating, date, reviewer_name, submitted_by, reviewer_profile_url, text, summary, owner_reply,
                     translated_text, translated_owner_reply, original_text_language, original_owner_reply_language,
                     review_url, humor_score, humor_notes, safety_label, safety_notes, tags, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(review_id) DO UPDATE SET
                     rating=excluded.rating,
                     date=excluded.date,
                     reviewer_name=excluded.reviewer_name,
+                    submitted_by=excluded.submitted_by,
                     reviewer_profile_url=excluded.reviewer_profile_url,
                     text=excluded.text,
                     summary=excluded.summary,
@@ -247,6 +251,7 @@ class Storage:
                     review.rating,
                     review.date,
                     review.reviewer_name,
+                    review.submitted_by,
                     review.reviewer_profile_url,
                     review.text,
                     review.summary,
@@ -391,6 +396,7 @@ class Storage:
                 rating=row["rating"],
                 date=row["date"],
                 reviewer_name=row["reviewer_name"],
+                submitted_by=row["submitted_by"] or "",
                 reviewer_profile_url=row["reviewer_profile_url"] or "",
                 text=row["text"],
                 summary=row["summary"] or "",
@@ -428,6 +434,7 @@ class Storage:
                 rating=row["rating"],
                 date=row["date"],
                 reviewer_name=row["reviewer_name"],
+                submitted_by=row["submitted_by"] or "",
                 reviewer_profile_url=row["reviewer_profile_url"] or "",
                 text=row["text"],
                 summary=row["summary"] or "",
@@ -467,6 +474,7 @@ class Storage:
                 rating=row["rating"],
                 date=row["date"],
                 reviewer_name=row["reviewer_name"],
+                submitted_by=row["submitted_by"] or "",
                 reviewer_profile_url=row["reviewer_profile_url"] or "",
                 text=row["text"],
                 summary=row["summary"] or "",
