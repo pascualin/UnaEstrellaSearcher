@@ -1,59 +1,95 @@
 app:
   output_dir: out
   data_dir: data
-  weekly_target_count: 20
-  humor_threshold: 0
-  max_reviews_per_place: 10
+  humor_threshold: 70
+  max_reviews_per_place: 40
   max_places_per_run: 10
   allow_repeat_suggestions: false
   locale: es
 discovery:
   provider: serpapi_maps
-  country: ES
-  regions:
-  - Madrid, Spain
+  country: CN
+  regions: []
   name_contains: ''
   categories:
-  - restaurant
-  min_total_reviews: 10
+  - atracción turística
+  min_total_reviews: 5000
   require_recent_days: 3650
 providers:
   serpapi:
     api_key_env: SERPAPI_API_KEY
     hl: es
-    gl: es
+    gl: cn
 scoring:
   provider: openai
   model: gpt-5.2
   api_key_env: OPENAI_API_KEY
   temperature: 0.2
   max_output_tokens: 320
-  prompt: "Evalúa UNA única reseña y determina cuán graciosa es.\n\nDevuelve EXCLUSIVAMENTE\
+  prompt: "Contexto\n\nEste análisis forma parte de un podcast de comedia llamado\
+    \ “Una Estrella”, donde se leen reseñas reales (principalmente de 1 estrella)\
+    \ y se comentan en tono humorístico.\n\nEl estilo del podcast es gamberro, irónico\
+    \ y exagerado. Buscamos reseñas que generen risa, ya sea por lo absurdas, exageradas,\
+    \ agresivas o surrealistas que son. Nos interesan especialmente:\n\t•\tReseñas\
+    \ con enfados desproporcionados o reacciones exageradas.\n\t•\tInsultos creativos\
+    \ o formas originales de quejarse.\n\t•\tSituaciones ridículas, incómodas o dantescas.\n\
+    \t•\tHistorias que escalan sin sentido o tienen giros inesperados.\n\t•\tContrastes\
+    \ fuertes entre lo esperado y lo que ocurre.\n\t•\tFrases que se puedan destacar\
+    \ y leer en voz alta porque tienen fuerza cómica.\n\nTambién damos mucho valor\
+    \ a las respuestas del propietario cuando:\n\t•\tEntran al trapo o contestan con\
+    \ ironía.\n\t•\tSon pasivo-agresivas o absurdamente defensivas.\n\t•\tGeneran\
+    \ un “diálogo” divertido con el cliente.\n\nNo buscamos reseñas correctas, educadas\
+    \ o informativas, sino aquellas que tienen potencial para hacer reír a una audiencia\
+    \ en directo.\n\nEl objetivo es detectar reseñas que funcionarían bien en el podcast\
+    \ y puntuar más alto aquellas que generen más juego cómico al leerlas y comentarlas.\n\
+    \nEvalúa UNA única reseña y determina cuán graciosa es siguiendo un criterio de\
+    \ humor gamberro y de podcast tipo “Una Estrella”.\n\nDevuelve EXCLUSIVAMENTE\
     \ un JSON válido, sin texto adicional.\n\nObjetivo\n\nAsignar una puntuación de\
     \ humor de 0 a 100, donde:\n\t•\t0 = nada gracioso\n\t•\t100 = extremadamente\
-    \ gracioso\n\nCriterios de humor (prioridad alta → baja)\n\t1.\tHumor gamberro:\
-    \ insultos, exageraciones, mala leche creativa, situaciones dantescas.\n\t2.\t\
-    Anécdotas absurdas o inesperadas contadas con gracia.\n\t3.\tContraste fuerte\
-    \ entre expectativas y experiencia real.\n\t4.\tRespuesta del propietario:\n\t\
-    •\tSi es graciosa, irónica o entra al trapo → sube claramente la puntuación.\n\
-    \t•\tSi es copia-pega, genérica o defensiva → no suma.\n\t5.\tReseñas de 1 estrella:\n\
-    \t•\tSi son graciosas, tienen prioridad frente a reseñas de más estrellas.\n\n\
-    Penalizaciones\n\t•\tQuejas serias sin gracia.\n\t•\tTexto neutro, técnico o educado.\n\
-    \t•\tEnfado plano sin creatividad.\n\t•\tHumor involuntario muy débil.\n\nOutput\n\
-    \nDevuelve solo este JSON:\n{{\n  \"score\": <entero 0-100>,\n  \"notes\": \"\
-    <explicación muy breve del porqué>\",\n  \"tags\": [\"insultos\", \"anecdota\"\
-    , \"respuesta_propietario\", \"exageracion\", \"...\"],\n  \"summary\": \"<resumen\
-    \ corto de 1-2 frases que conserve el humor>\"\n}}\n\nSi no hay nada gracioso,\
-    \ asigna una puntuación baja (0–20).\n\n⸻\n\nInput\n\nESTRELLAS:\n{rating}\n\n\
-    RESEÑA:\n{review_text}\n\nRESPUESTA DEL PROPIETARIO:\n{owner_reply}\n"
+    \ gracioso (nivel “esto entra seguro en el podcast”)\n\nCriterios de humor (prioridad\
+    \ alta → baja)\n\t1.\tHumor gamberro (MUY IMPORTANTE)\n\n\t•\tInsultos creativos,\
+    \ mala leche con gracia, dramatismo exagerado.\n\t•\tSituaciones dantescas o ridículas.\n\
+    \t•\tCuanto más exagerado y visceral, mejor.\n\n\t2.\tAnécdotas absurdas o inesperadas\n\
+    \n\t•\tHistorias que escalan sin sentido o acaban en algo surrealista.\n\t•\t\
+    Detalles innecesarios que lo hacen más gracioso.\n\n\t3.\tContraste fuerte\n\n\
+    \t•\tExpectativa vs realidad muy marcada.\n\t•\tEj: “veníamos a cenar romántico”\
+    \ → “acabamos discutiendo con un camarero y sin cena”.\n\n\t4.\tRespuesta del\
+    \ propietario (MUY relevante)\n\n\t•\tSi entra al trapo, vacila, o responde con\
+    \ ironía → SUBE MUCHO la puntuación.\n\t•\tSi parece escrita con rabia o es pasivo-agresiva\
+    \ → suma.\n\t•\tSi es copy-paste corporativo → no suma nada.\n\n\t5.\tReseñas\
+    \ de 1 estrella\n\n\t•\tTienen prioridad natural.\n\t•\tSi además son graciosas\
+    \ → boost extra.\n\n\t6.\tPotencial para podcast\n\n\t•\t¿Se podría comentar en\
+    \ voz alta y sacar chistes?\n\t•\t¿Tiene frases destacables o “highlight”?\n\n\
+    Penalizaciones\n\t•\tQuejas serias sin gracia.\n\t•\tTexto educado o neutro.\n\
+    \t•\tEnfado plano sin creatividad.\n\t•\tReseñas largas pero aburridas.\n\t•\t\
+    Humor involuntario débil.\n\nResolución de la puntuación (MUY IMPORTANTE)\n\t\
+    •\tNo uses la escala como si fueran bloques amplios tipo 20, 30, 40, 50, 60, 70.\n\
+    \t•\tUsa toda la escala 0-100 con suficiente precisión.\n\t•\tEvita repetir la\
+    \ misma puntuación exacta en reseñas distintas salvo que de verdad tengan un nivel\
+    \ de humor muy parecido.\n\t•\tSi dos reseñas son parecidas pero una tiene mejor\
+    \ remate, frase más memorable o mejor respuesta del propietario, debe tener una\
+    \ puntuación diferente.\n\t•\tPrefiere puntuaciones no redondas cuando haya matices\
+    \ reales.\n\t•\tPiensa la puntuación como una ordenación fina, no como una etiqueta\
+    \ de tramo.\n\nGuía orientativa para puntuar\n\t•\t0-20: nada gracioso o solo\
+    \ queja plana.\n\t•\t21-40: hay algo de gracia, pero floja o poco memorable.\n\
+    \t•\t41-59: reseña claramente aprovechable, con algún detalle divertido, pero\
+    \ aún no es una apuesta clara para el podcast.\n\t•\t60-80: muy graciosa, con\
+    \ frases, tono o respuesta que funcionan muy bien. Una reseña buena que realmente\
+    \ se pueda usar en el podcast debería estar normalmente en 60 o más.\n\t•\t81-100:\
+    \ material top para el podcast; destaca claramente sobre la mayoría.\n\nTags posibles\
+    \ (elige los que apliquen)\n\t•\t“insultos”\n\t•\t“exageracion”\n\t•\t“anecdota”\n\
+    \t•\t“situacion_dantesca”\n\t•\t“respuesta_propietario”\n\t•\t“ironico”\n\t•\t\
+    “absurdo”\n\t•\t“queja_tipica”\n\t•\t“poco_gracioso”\n\nReglas importantes\n\t\
+    •\tNo modifiques el texto de la reseña ni de la respuesta.\n\t•\tEvalúa el conjunto\
+    \ completo (reseña + respuesta).\n\t•\tPrioriza lo que haría reír en un podcast,\
+    \ no lo “correcto”.\n\t•\tSi hay una frase claramente destacable, tenla en cuenta\
+    \ para la puntuación.\n\t•\tLa puntuación debe ayudar a ordenar reseñas entre\
+    \ sí con matices finos.\n\nOutput\n\nDevuelve solo este JSON:\n\n{\n“score”: <entero\
+    \ 0-100>,\n“notes”: “<explicación muy breve del porqué>”,\n“tags”: [”…”],\n“summary”:\
+    \ “<resumen corto de 1-2 frases que conserve el humor>”\n}\n\nSi no hay nada gracioso,\
+    \ asigna una puntuación baja (0–20).\n\nInput\n\nESTRELLAS:\n{rating}\n\nRESEÑA:\n\
+    {review_text}\n\nRESPUESTA DEL PROPIETARIO:\n{owner_reply}"
 safety:
   pii_patterns: []
   sensitive_keywords: []
   accusation_keywords: []
-curation:
-  theme_limits:
-    owner_meltdown: 10
-    absurd_complaint: 12
-    tourist_drama: 8
-    service_rage: 12
-    misc: 12

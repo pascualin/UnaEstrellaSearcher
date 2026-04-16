@@ -1,7 +1,6 @@
 app:
   output_dir: out
   data_dir: data
-  weekly_target_count: 40
   humor_threshold: 55
   max_reviews_per_place: 25
   max_places_per_run: 40
@@ -97,11 +96,3 @@ safety:
     - "theft"
     - "fraud"
     - "scam"
-
-curation:
-  theme_limits:
-    owner_meltdown: 10
-    absurd_complaint: 12
-    tourist_drama: 8
-    service_rage: 12
-    misc: 12

@@ -117,7 +117,11 @@ def _file_headers(token: str, content_type: str = "application/json") -> dict[st
 def _page_title(review: dict[str, Any]) -> str:
     place = str(review.get("place_name") or "Sitio").strip()
     reviewer = str(review.get("reviewer_name") or "Anónimo").strip()
-    return f"{place} - {reviewer}"[:180]
+    submitted_by = str(review.get("submitted_by") or "").strip()
+    title = f"{place} - {reviewer}"
+    if submitted_by:
+        title = f"{submitted_by} -- {title}"
+    return title[:180]
 
 
 def _build_properties(
@@ -258,7 +262,7 @@ def _append_image_block(token: str, page_id: str, upload_id: str) -> None:
                 "object": "block",
                 "type": "image",
                 "image": {
-                    "caption": _rich_text("Captura de la reseña"),
+                    "caption": [],
                     "type": "file_upload",
                     "file_upload": {"id": upload_id},
                 },
