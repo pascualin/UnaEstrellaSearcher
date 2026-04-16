@@ -967,6 +967,32 @@ body {
   padding: 18px;
   box-shadow: var(--shadow);
 }
+.modal-card h2 {
+  margin: 0 0 10px;
+  color: var(--ink-invert);
+}
+.modal-card .hint {
+  color: rgba(245, 247, 251, 0.82);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.app-page .modal {
+  background: rgba(15, 22, 30, 0.32);
+  backdrop-filter: blur(10px);
+}
+.app-page .modal-card {
+  width: min(520px, 92vw);
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(17, 25, 34, 0.08);
+  box-shadow: 0 24px 60px rgba(15, 24, 32, 0.16);
+  color: #16202a;
+}
+.app-page .modal-card h2 {
+  color: #111922;
+}
+.app-page .modal-card .hint {
+  color: #44515c;
+}
 @media (max-width: 980px) {
       .layout {
         grid-template-columns: 1fr;
