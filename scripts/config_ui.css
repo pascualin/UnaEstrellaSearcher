@@ -269,6 +269,44 @@ main {
     }
     .hint { color: var(--muted); font-size: 13px; }
     .banner { margin-top: 12px; font-weight: 600; color: var(--accent); }
+    .import-review-stack {
+      display: grid;
+      gap: 12px;
+    }
+    .import-paste-zone {
+      display: grid;
+      gap: 4px;
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px dashed rgba(20, 30, 40, 0.22);
+      background: rgba(7, 12, 21, 0.04);
+      color: inherit;
+      outline: none;
+    }
+    .import-paste-zone strong {
+      font-size: 15px;
+    }
+    .import-paste-zone span {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .import-paste-zone:focus {
+      border-color: rgba(93, 213, 255, 0.6);
+      box-shadow: 0 0 0 3px rgba(93, 213, 255, 0.12);
+    }
+    .import-review-stack input[type="file"] {
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(7, 12, 21, 0.06);
+      border: 1px dashed rgba(20, 30, 40, 0.16);
+      color: inherit;
+    }
+    .import-review-actions {
+      margin-top: 0;
+    }
+    .inline-feedback {
+      min-height: 20px;
+    }
     .view { display: none; }
     .view.active { display: block; }
 .table-wrap {

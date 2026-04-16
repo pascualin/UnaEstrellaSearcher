@@ -36,13 +36,16 @@ def _serpapi_reviews(
     gl: str,
     cache_dir: Path,
     next_page_token: str | None = None,
+    sort_by: str | None = "ratingLow",
+    num: int | None = None,
 ) -> dict:
     cache_payload = {
         "data_id": data_id,
         "hl": hl,
         "gl": gl,
         "next_page_token": next_page_token or "",
-        "sort_by": "ratingLow",
+        "sort_by": sort_by or "",
+        "num": int(num or 0),
     }
     cached = load_cached_json(cache_dir, "reviews", cache_payload)
     if isinstance(cached, dict):
@@ -56,8 +59,9 @@ def _serpapi_reviews(
                     "data_id": data_id,
                     "hl": hl,
                     "gl": gl,
-                    "sort_by": "ratingLow",
+                    "sort_by": sort_by or "",
                     "next_page_token": next_page_token or "",
+                    "num": int(num or 0),
                 },
                 "review_count": len(cached.get("reviews", []) or []),
             },
@@ -71,8 +75,11 @@ def _serpapi_reviews(
         "api_key": api_key,
         "hl": hl,
         "gl": gl,
-        "sort_by": "ratingLow",
     }
+    if sort_by:
+        params["sort_by"] = sort_by
+    if num:
+        params["num"] = int(num)
     if next_page_token:
         params["next_page_token"] = next_page_token
     emit_api_log(

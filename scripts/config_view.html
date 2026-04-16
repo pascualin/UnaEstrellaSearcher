@@ -65,6 +65,33 @@
             </div>
 
             <div class="config-column">
+              <div class="card app-card app-card-accent">
+                <h2>Importar reseña</h2>
+                <p class="hint">Sube una captura de la reseña para extraer sus datos y, si quieres, añade también la URL original.</p>
+                <div class="import-review-stack">
+                  <div class="import-paste-zone" id="import-paste-zone" tabindex="0">
+                    <strong>Pega aquí una o varias capturas</strong>
+                    <span>Usa `Cmd+V` o `Ctrl+V` con imágenes copiadas al portapapeles. Se acumulan para una sola reseña.</span>
+                  </div>
+                  <div class="hint inline-feedback" id="import-review-image-name"></div>
+                  <div class="actions import-review-actions">
+                    <button class="secondary" id="clear-import-images" type="button">Limpiar capturas</button>
+                  </div>
+                  <div class="compact-field compact-field--full">
+                    <label for="import-review-url">Enlace de la reseña (opcional)</label>
+                    <input id="import-review-url" type="text" placeholder="https://www.google.com/maps/reviews/..." />
+                  </div>
+                  <div class="compact-field compact-field--full">
+                    <label for="import-review-submitted-by">Quién nos envía la reseña (opcional)</label>
+                    <input id="import-review-submitted-by" type="text" placeholder="Álvaro" />
+                  </div>
+                  <div class="actions import-review-actions">
+                    <button id="import-review-button" type="button">Importar desde captura</button>
+                  </div>
+                  <div class="hint inline-feedback" id="import-review-result"></div>
+                </div>
+              </div>
+
               <div class="card app-card">
                 <h2>Descubrimiento</h2>
                 <div class="compact-form-grid compact-form-grid--split">
@@ -136,10 +163,14 @@
     const liveAboveThreshold = byId("live-above-threshold");
     const liveEta = byId("live-eta");
     const liveScores = byId("live-scores");
+    const importReviewResult = byId("import-review-result");
+    const importReviewImageName = byId("import-review-image-name");
+    const importPasteZone = byId("import-paste-zone");
     let progressOffset = 0;
     let progressTimer = null;
     let runFinished = false;
     let progressBootstrapped = false;
+    let importedReviewImages = [];
     const progressState = {
       collectedReviews: 0,
       aboveThreshold: 0,
@@ -277,6 +308,126 @@
       const res = await fetch("/api/run-dry-run", { method: "POST" });
       const text = await res.text();
       status.textContent = text;
+    }
+
+    function renderImportedImagesState() {
+      if (!importedReviewImages.length) {
+        importReviewImageName.textContent = "";
+        return;
+      }
+      const labels = importedReviewImages.map((file, index) => file.name || `captura-${index + 1}`);
+      importReviewImageName.textContent = `${importedReviewImages.length} captura(s): ${labels.join(", ")}`;
+    }
+
+    function setImportedImageFiles(files) {
+      importedReviewImages = Array.isArray(files) ? files.filter(Boolean) : [];
+      if (!importedReviewImages.length) {
+        importReviewResult.textContent = "";
+      }
+      renderImportedImagesState();
+    }
+
+    function appendImportedImageFiles(files) {
+      const nextFiles = [...importedReviewImages];
+      for (const file of files || []) {
+        if (file) nextFiles.push(file);
+      }
+      importedReviewImages = nextFiles;
+      renderImportedImagesState();
+      if (importedReviewImages.length) {
+        importReviewResult.textContent = `${importedReviewImages.length} captura(s) listas para importar.`;
+      }
+    }
+
+    function clearImportedImages() {
+      importedReviewImages = [];
+      renderImportedImagesState();
+      importReviewResult.textContent = "";
+    }
+
+    function normalizePastedImage(file) {
+      if (!file) return null;
+      return new File([file], file.name || `captura-${Date.now()}.png`, {
+        type: file.type || "image/png",
+      });
+    }
+
+    function handlePastedImages(files) {
+      const normalized = (files || []).map(normalizePastedImage).filter(Boolean);
+      if (!normalized.length) return false;
+      appendImportedImageFiles(normalized);
+      importReviewResult.textContent = "Capturas pegadas correctamente. Ya puedes importarlas.";
+      return true;
+    }
+
+    function handleSelectedImages(files) {
+      const normalized = Array.from(files || []).filter(Boolean);
+      setImportedImageFiles(normalized);
+      if (normalized.length) {
+        importReviewResult.textContent = `${normalized.length} captura(s) seleccionadas. Ya puedes importarlas.`;
+      } else {
+        importReviewResult.textContent = "";
+      }
+    }
+
+    async function importReview() {
+      const reviewUrl = byId("import-review-url").value.trim();
+      const submittedBy = byId("import-review-submitted-by").value.trim();
+      const button = byId("import-review-button");
+      const files = importedReviewImages;
+      if (!files.length) {
+        importReviewResult.textContent = "Selecciona al menos una captura antes de importar.";
+        return;
+      }
+      button.disabled = true;
+      importReviewResult.textContent = `Leyendo ${files.length} captura(s) e importando reseña...`;
+      try {
+        const imagesPayload = await Promise.all(
+          files.map((file) => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve({
+              image_data: reader.result,
+              mime_type: file.type || "",
+            });
+            reader.onerror = () => reject(new Error("file_read_error"));
+            reader.readAsDataURL(file);
+          }))
+        );
+        if (!imagesPayload.length) {
+          importReviewResult.textContent = "No se pudieron preparar las capturas para enviarlas.";
+          return;
+        }
+        const res = await fetch("/api/import-review-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            review_url: reviewUrl,
+            submitted_by: submittedBy,
+            images: imagesPayload,
+          }),
+        });
+        const payload = await res.json();
+        if (!res.ok || !payload.ok) {
+          importReviewResult.textContent = payload.message || "No se pudo importar la reseña.";
+          return;
+        }
+        const verb = payload.already_exists ? "actualizada" : "importada";
+        const bits = [
+          `Reseña ${verb}`,
+          payload.place_name ? `Lugar: ${payload.place_name}` : "",
+          payload.reviewer_name ? `Autor: ${payload.reviewer_name}` : "",
+          Number.isFinite(Number(payload.rating)) ? `Estrellas: ${payload.rating}` : "",
+          Number.isFinite(Number(payload.humor_score)) ? `Humor: ${payload.humor_score}` : "",
+        ].filter(Boolean);
+        importReviewResult.textContent = bits.join(" · ");
+        if (payload.detail_url) {
+          window.open(payload.detail_url, "_blank", "noopener");
+        }
+      } catch (err) {
+        importReviewResult.textContent = "Error de red al importar la reseña.";
+      } finally {
+        button.disabled = false;
+      }
     }
 
     function showNoResults(message) {
@@ -466,6 +617,47 @@
     byId("save").addEventListener("click", saveConfig);
     byId("run-weekly").addEventListener("click", runWeekly);
     byId("run-dry").addEventListener("click", runDryRun);
+    byId("import-review-button").addEventListener("click", importReview);
+    byId("clear-import-images").addEventListener("click", clearImportedImages);
+    byId("import-review-url").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        importReview();
+      }
+    });
+    importPasteZone.addEventListener("paste", (event) => {
+      const items = Array.from(event.clipboardData?.items || []);
+      const files = [];
+      for (const item of items) {
+        if (item.type && item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) files.push(file);
+        }
+      }
+      if (handlePastedImages(files)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+    });
+    window.addEventListener("paste", (event) => {
+      if (event.defaultPrevented) return;
+      const active = document.activeElement;
+      const isTypingField = active && ["INPUT", "TEXTAREA"].includes(active.tagName);
+      if (isTypingField && active !== importPasteZone) return;
+      const items = Array.from(event.clipboardData?.items || []);
+      const files = [];
+      for (const item of items) {
+        if (item.type && item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) files.push(file);
+        }
+      }
+      if (handlePastedImages(files)) {
+        event.preventDefault();
+        return;
+      }
+    });
     byId("no-results-close").addEventListener("click", closeNoResults);
     noResultsModal.addEventListener("click", (event) => {
       if (event.target === noResultsModal) closeNoResults();
