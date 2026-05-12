@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Config Studio · Ejecución en vivo</title>
+  <link rel="stylesheet" href="/config_ui.css" />
+</head>
+<body class="app-page">
+  <div class="layout app-layout">
+    <aside class="app-sidebar">
+      <div class="brand app-brand">Humorous Review Scout</div>
+      <nav>
+        <a class="nav-item" href="/config">Configuración</a>
+        <a class="nav-item active" href="/run">Ejecución en vivo</a>
+        <a class="nav-item" href="/import-review">Importar reseña</a>
+        <a class="nav-item" href="/db">Base de datos</a>
+      </nav>
+      <div class="actions side-actions app-sidebar-actions">
+        <button class="secondary" id="run-weekly">Ejecutar</button>
+        <button class="secondary" id="run-dry">Ejecutar simulación</button>
+        <div class="banner" id="status"></div>
+      </div>
+    </aside>
+    <div class="content">
+      <header class="app-header">
+        <div class="app-eyebrow">Pipeline</div>
+        <h1>Ejecución en vivo</h1>
+        <p>Un tablero para ver qué está pasando ahora, qué está funcionando y dónde se está perdiendo tiempo o señal.</p>
+      </header>
+      <main>
+        <section class="view active">
+          <div class="run-dashboard">
+            <section class="card app-card app-card-accent run-hero">
+              <div class="run-hero-top">
+                <div>
+                  <div class="run-section-label">Estado actual</div>
+                  <h2 id="live-stage">En espera</h2>
+                  <p class="hint">Seguimiento del ritmo de búsqueda, puntuación y hallazgos útiles durante la ejecución.</p>
+                </div>
+                <div class="run-status-pill" id="run-status-chip">Idle</div>
+              </div>
+              <div class="run-kpi-grid">
+                <div class="run-kpi-card">
+                  <span class="run-kpi-label">Sitios encontrados</span>
+                  <strong id="live-sites">0</strong>
+                </div>
+                <div class="run-kpi-card">
+                  <span class="run-kpi-label">Sitios procesados</span>
+                  <strong id="live-processed-sites">0</strong>
+                </div>
+                <div class="run-kpi-card">
+                  <span class="run-kpi-label">Reseñas inspeccionadas</span>
+                  <strong id="live-count">0</strong>
+                </div>
+                <div class="run-kpi-card">
+                  <span class="run-kpi-label">Buenas candidatas</span>
+                  <strong id="live-above-threshold">0</strong>
+                </div>
+              </div>
+            </section>
+
+            <div class="run-column-layout">
+              <div class="run-main-column">
+                <section class="card app-card">
+                  <div class="run-card-head">
+                    <div>
+                      <div class="run-section-label">Foco</div>
+                      <h3>Qué está haciendo ahora</h3>
+                    </div>
+                  </div>
+                  <div class="run-focus-grid">
+                    <div class="run-focus-card">
+                      <span class="run-kpi-label">Búsqueda activa</span>
+                      <strong id="run-current-query">Sin búsqueda activa</strong>
+                      <span class="run-focus-sub" id="run-current-region">Esperando arranque</span>
+                    </div>
+                    <div class="run-focus-card">
+                      <span class="run-kpi-label">Sitio actual</span>
+                      <strong id="live-place">-</strong>
+                      <span class="run-focus-sub">Lugar que se está inspeccionando en este momento</span>
+                    </div>
+                    <div class="run-focus-card">
+                      <span class="run-kpi-label">Última puntuación</span>
+                      <strong id="live-scores">-</strong>
+                      <span class="run-focus-sub">Última reseña que entró al scorer</span>
+                    </div>
+                    <div class="run-focus-card">
+                      <span class="run-kpi-label">ETA</span>
+                      <strong id="live-eta">-</strong>
+                      <span class="run-focus-sub">Tiempo estimado para cerrar los sitios pendientes</span>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="card app-card">
+                  <div class="run-card-head">
+                    <div>
+                      <div class="run-section-label">Rendimiento</div>
+                      <h3>Lectura útil de la ejecución</h3>
+                    </div>
+                  </div>
+                  <div class="run-metric-grid">
+                    <div class="run-metric-tile">
+                      <span class="run-kpi-label">Velocidad</span>
+                      <strong id="run-throughput">0 reseñas/min</strong>
+                    </div>
+                    <div class="run-metric-tile">
+                      <span class="run-kpi-label">Hit rate</span>
+                      <strong id="run-hit-rate">0%</strong>
+                    </div>
+                    <div class="run-metric-tile">
+                      <span class="run-kpi-label">Puntuación media</span>
+                      <strong id="run-avg-score">0</strong>
+                    </div>
+                    <div class="run-metric-tile">
+                      <span class="run-kpi-label">Mejor puntuación</span>
+                      <strong id="run-top-score">-</strong>
+                    </div>
+                    <div class="run-metric-tile">
+                      <span class="run-kpi-label">Búsquedas lanzadas</span>
+                      <strong id="run-searches">0</strong>
+                    </div>
+                    <div class="run-metric-tile">
+                      <span class="run-kpi-label">Búsquedas vacías</span>
+                      <strong id="run-no-results">0</strong>
+                    </div>
+                    <div class="run-metric-tile">
+                      <span class="run-kpi-label">Sitios con error</span>
+                      <strong id="run-place-failures">0</strong>
+                    </div>
+                    <div class="run-metric-tile">
+                      <span class="run-kpi-label">Sitios con reseñas útiles</span>
+                      <strong id="run-place-success-rate">0%</strong>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="card app-card">
+                  <div class="run-card-head">
+                    <div>
+                      <div class="run-section-label">Actividad</div>
+                      <h3>Últimos eventos importantes</h3>
+                    </div>
+                  </div>
+                  <div class="run-live-list" id="run-activity-list"></div>
+                </section>
+              </div>
+
+              <div class="run-side-column">
+                <section class="card app-card app-card-accent">
+                  <div class="run-card-head">
+                    <div>
+                      <div class="run-section-label">Hallazgos</div>
+                      <h3>Mejores reseñas vistas</h3>
+                    </div>
+                  </div>
+                  <div class="run-live-list" id="run-top-list"></div>
+                </section>
+
+                <section class="card app-card">
+                  <div class="run-card-head">
+                    <div>
+                      <div class="run-section-label">Sitios</div>
+                      <h3>Resultado por sitio</h3>
+                    </div>
+                  </div>
+                  <div class="run-live-list" id="run-place-list"></div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <div class="modal" id="no-results-modal" aria-hidden="true">
+    <div class="modal-card">
+      <h2>Sin resultados</h2>
+      <p class="hint" id="no-results-text">No se encontraron resultados para esa búsqueda.</p>
+      <div class="actions">
+        <button class="secondary" id="no-results-close">Cerrar</button>
+      </div>
+    </div>
+  </div>
+  <script src="/config_ui.js"></script>
+</body>
+</html>

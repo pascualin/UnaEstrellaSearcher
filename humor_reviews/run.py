@@ -121,6 +121,7 @@ def run_collection(
                 _emit_progress(
                     "review_scored",
                     {
+                        "review_id": raw.review_id,
                         "place_id": place_id,
                         "place_name": place_name,
                         "review_count": place_count,

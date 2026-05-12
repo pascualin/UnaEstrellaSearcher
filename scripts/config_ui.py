@@ -36,6 +36,8 @@ PORT = 5173
 
 
 CONFIG_HTML_PATH = ROOT / "scripts" / "config_view.html"
+RUN_HTML_PATH = ROOT / "scripts" / "run_view.html"
+IMPORT_REVIEW_HTML_PATH = ROOT / "scripts" / "import_review_view.html"
 DB_HTML_PATH = ROOT / "scripts" / "db_view.html"
 REVIEW_HTML_PATH = ROOT / "scripts" / "review_detail.html"
 REVIEW_IMPORT_MAX_PAGES = 24
@@ -297,6 +299,33 @@ def _fetch_db_snapshot(sort_by: str, status_filter: str) -> Dict[str, Any]:
         "reviews": reviews,
         "shortlist": shortlist,
     }
+
+
+def _fetch_review_statuses(review_ids: List[str]) -> Dict[str, str]:
+    normalized_ids: List[str] = []
+    seen: set[str] = set()
+    for review_id in review_ids:
+        value = str(review_id or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized_ids.append(value)
+    if not normalized_ids:
+        return {}
+
+    db_path = _db_path()
+    if not db_path.exists():
+        return {}
+
+    placeholders = ", ".join("?" for _ in normalized_ids)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_review_columns(conn)
+        rows = conn.execute(
+            f"SELECT review_id, status FROM reviews WHERE review_id IN ({placeholders})",
+            tuple(normalized_ids),
+        ).fetchall()
+    return {str(row["review_id"]): _normalize_status(row["status"]) for row in rows}
 
 
 def _review_filters(sort_by: str, status_filter: str) -> tuple[str, str, tuple]:
@@ -1425,8 +1454,38 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(404, b"Not found", "text/plain")
             return
+        if self.path == "/config_ui.js":
+            js_path = ROOT / "scripts" / "config_ui.js"
+            if js_path.exists():
+                self._send(
+                    200,
+                    js_path.read_bytes(),
+                    "application/javascript; charset=utf-8",
+                    headers={"Cache-Control": "no-store"},
+                )
+                return
+            self._send(404, b"Not found", "text/plain")
+            return
         if self.path == "/" or self.path in {"/config", "/config/"}:
             html = _load_html(CONFIG_HTML_PATH, "Missing config_view.html")
+            self._send(
+                200,
+                html.encode("utf-8"),
+                "text/html; charset=utf-8",
+                headers={"Cache-Control": "no-store"},
+            )
+            return
+        if self.path in {"/run", "/run/"}:
+            html = _load_html(RUN_HTML_PATH, "Missing run_view.html")
+            self._send(
+                200,
+                html.encode("utf-8"),
+                "text/html; charset=utf-8",
+                headers={"Cache-Control": "no-store"},
+            )
+            return
+        if self.path in {"/import-review", "/import-review/"}:
+            html = _load_html(IMPORT_REVIEW_HTML_PATH, "Missing import_review_view.html")
             self._send(
                 200,
                 html.encode("utf-8"),
@@ -1507,6 +1566,15 @@ class Handler(BaseHTTPRequestHandler):
                 if key == "status":
                     status_filter = value or "pending"
             payload = _fetch_db_snapshot(sort_by, status_filter)
+            self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
+            return
+        if self.path.startswith("/api/review-statuses"):
+            parsed = parse_qs(urlsplit(self.path).query)
+            raw_ids = parsed.get("ids") or []
+            review_ids: List[str] = []
+            for batch in raw_ids:
+                review_ids.extend(part.strip() for part in str(batch).split(","))
+            payload = {"statuses": _fetch_review_statuses(review_ids)}
             self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
             return
         self._send(404, b"Not found", "text/plain")

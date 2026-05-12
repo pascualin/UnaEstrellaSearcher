@@ -12,6 +12,8 @@
       <div class="brand app-brand">Humorous Review Scout</div>
       <nav>
         <a class="nav-item" href="/config">Configuración</a>
+        <a class="nav-item" href="/run">Ejecución en vivo</a>
+        <a class="nav-item" href="/import-review">Importar reseña</a>
         <a class="nav-item active" href="/db">Base de datos</a>
       </nav>
       <div class="actions side-actions app-sidebar-actions">
@@ -87,13 +89,19 @@
         container.innerHTML = "<div class='hint' style='padding: 12px;'>Sin datos.</div>";
         return;
       }
+      const rowStatusClass = (row) => {
+        const value = String(row.status || "").trim().toLowerCase();
+        if (["accepted", "aceptada", "selected", "used"].includes(value)) return "review-row--accepted";
+        if (["rejected", "rechazada", "discarded"].includes(value)) return "review-row--rejected";
+        return "";
+      };
       const headers = ["Humor score", "Estado", "Nombre", "Localidad", "Fecha"];
       const thead = "<thead><tr>" + headers.map((h) => `<th>${h}</th>`).join("") + "</tr></thead>";
       const tbody = "<tbody>" + rows.map((row) => {
         const name = row.place_name || "Sitio";
         const url = row.review_url || "";
         const site = url ? `<a href=\"${url}\" target=\"_blank\" rel=\"noopener noreferrer\">${name}</a>` : name;
-        return `<tr class=\"review-row\" data-review-id=\"${row.review_id || ""}\">` + [
+        return `<tr class=\"review-row ${rowStatusClass(row)}\" data-review-id=\"${row.review_id || ""}\">` + [
           `<td>${row.humor_score ?? ""}</td>`,
           `<td>${row.status_label || "Vacío"}</td>`,
           `<td>${site}</td>`,
