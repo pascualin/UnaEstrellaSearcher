@@ -210,6 +210,8 @@ def run_rescore_llm_errors(storage: Storage, settings, limit: int | None = None)
     rescored = 0
     for review in reviews:
         humor = score_review(review.text, review.owner_reply, review.rating, settings.scoring)
+        if "llm_error" in humor.tags:
+            continue
         updated = Review(
             review_id=review.review_id,
             place_id=review.place_id,
@@ -228,8 +230,7 @@ def run_rescore_llm_errors(storage: Storage, settings, limit: int | None = None)
             tags=",".join(humor.tags),
         )
         storage.upsert_review(updated)
-        if humor.score < settings.app.humor_threshold:
-            storage.update_status(review.review_id, "rejected")
+        storage.update_status(review.review_id, "new")
         rescored += 1
 
     print(f"Rescored {rescored} reviews")

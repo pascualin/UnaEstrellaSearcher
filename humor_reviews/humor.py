@@ -252,31 +252,10 @@ def _create_completion_with_retries(client: OpenAI, request_payload: dict[str, A
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return client.chat.completions.create(
-                model=request_payload["model"],
-                messages=request_payload["messages"],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "humor_score",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "score": {"type": "integer", "minimum": 0, "maximum": 100},
-                                "notes": {"type": "string"},
-                                "tags": {"type": "array", "items": {"type": "string"}},
-                                "summary": {"type": "string"},
-                            },
-                            "required": ["score", "notes", "tags", "summary"],
-                            "additionalProperties": False,
-                        },
-                        "strict": True,
-                    },
-                },
-                temperature=request_payload["temperature"],
-                max_completion_tokens=request_payload["max_completion_tokens"],
-            )
+            return _create_completion(client, request_payload, include_temperature=True)
         except Exception as exc:  # pragma: no cover - network/runtime issues
+            if _is_unsupported_temperature_error(exc):
+                return _create_completion(client, request_payload, include_temperature=False)
             last_exc = exc
             if attempt >= attempts or not _is_retryable_openai_error(exc):
                 raise
@@ -300,6 +279,45 @@ def _is_retryable_openai_error(exc: Exception) -> bool:
         "server error",
     ]
     return any(marker in message for marker in retry_markers)
+
+
+def _is_unsupported_temperature_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "unsupported value" in message and "temperature" in message
+
+
+def _create_completion(
+    client: OpenAI,
+    request_payload: dict[str, Any],
+    *,
+    include_temperature: bool,
+) -> Any:
+    kwargs: dict[str, Any] = {
+        "model": request_payload["model"],
+        "messages": request_payload["messages"],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "humor_score",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "score": {"type": "integer", "minimum": 0, "maximum": 100},
+                        "notes": {"type": "string"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "summary": {"type": "string"},
+                    },
+                    "required": ["score", "notes", "tags", "summary"],
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            },
+        },
+        "max_completion_tokens": request_payload["max_completion_tokens"],
+    }
+    if include_temperature:
+        kwargs["temperature"] = request_payload["temperature"]
+    return client.chat.completions.create(**kwargs)
 
 
 def _extract_json_object(value: str) -> str:

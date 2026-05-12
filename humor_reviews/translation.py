@@ -177,14 +177,10 @@ def _create_completion_with_retries(client: OpenAI, request_payload: dict[str, A
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return client.chat.completions.create(
-                model=request_payload["model"],
-                messages=request_payload["messages"],
-                response_format=request_payload["response_format"],
-                temperature=request_payload["temperature"],
-                max_completion_tokens=request_payload["max_completion_tokens"],
-            )
+            return _create_completion(client, request_payload, include_temperature=True)
         except Exception as exc:  # pragma: no cover - network/runtime issues
+            if _is_unsupported_temperature_error(exc):
+                return _create_completion(client, request_payload, include_temperature=False)
             last_exc = exc
             if attempt == attempts or not _is_retryable_openai_error(exc):
                 raise
@@ -192,6 +188,27 @@ def _create_completion_with_retries(client: OpenAI, request_payload: dict[str, A
     if last_exc is not None:
         raise last_exc
     raise RuntimeError("Translation request failed without raising an exception.")
+
+
+def _is_unsupported_temperature_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "unsupported value" in message and "temperature" in message
+
+
+def _create_completion(
+    client: OpenAI,
+    request_payload: dict[str, Any],
+    include_temperature: bool,
+) -> Any:
+    kwargs: dict[str, Any] = {
+        "model": request_payload["model"],
+        "messages": request_payload["messages"],
+        "response_format": request_payload["response_format"],
+        "max_completion_tokens": request_payload["max_completion_tokens"],
+    }
+    if include_temperature:
+        kwargs["temperature"] = request_payload["temperature"]
+    return client.chat.completions.create(**kwargs)
 
 
 def _is_retryable_openai_error(exc: Exception) -> bool:
