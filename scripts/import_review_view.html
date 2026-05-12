@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Config Studio · Importar reseña</title>
+  <link rel="stylesheet" href="/config_ui.css" />
+</head>
+<body class="app-page">
+  <div class="layout app-layout">
+    <aside class="app-sidebar">
+      <div class="brand app-brand">Humorous Review Scout</div>
+      <nav>
+        <a class="nav-item" href="/config">Configuración</a>
+        <a class="nav-item" href="/run">Ejecución en vivo</a>
+        <a class="nav-item active" href="/import-review">Importar reseña</a>
+        <a class="nav-item" href="/db">Base de datos</a>
+      </nav>
+    </aside>
+    <div class="content">
+      <header class="app-header">
+        <div class="app-eyebrow">Manual</div>
+        <h1>Importar reseña</h1>
+        <p>Extrae una reseña desde una o varias capturas pegadas desde el portapapeles.</p>
+      </header>
+      <main>
+        <section class="view active">
+          <div class="config-dashboard">
+            <div class="config-column">
+              <div class="card app-card app-card-accent">
+                <h2>Capturas</h2>
+                <div class="import-review-stack">
+                  <div class="import-paste-zone" id="import-paste-zone" tabindex="0">
+                    <strong>Pega aquí una o varias capturas</strong>
+                    <span>Usa `Cmd+V` o `Ctrl+V` con imágenes copiadas al portapapeles. Se acumulan para una sola reseña.</span>
+                  </div>
+                  <div class="hint inline-feedback" id="import-review-image-name"></div>
+                  <div class="actions import-review-actions">
+                    <button class="secondary" id="clear-import-images" type="button">Limpiar capturas</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="config-column">
+              <div class="card app-card">
+                <h2>Datos opcionales</h2>
+                <div class="import-review-stack">
+                  <div class="compact-field compact-field--full">
+                    <label for="import-review-url">Enlace de la reseña</label>
+                    <input id="import-review-url" type="text" placeholder="https://www.google.com/maps/reviews/..." />
+                  </div>
+                  <div class="compact-field compact-field--full">
+                    <label for="import-review-submitted-by">Quién nos envía la reseña</label>
+                    <input id="import-review-submitted-by" type="text" placeholder="Álvaro" />
+                  </div>
+                  <div class="actions import-review-actions">
+                    <button id="import-review-button" type="button">Importar desde captura</button>
+                  </div>
+                  <div class="hint inline-feedback" id="import-review-result"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script src="/config_ui.js"></script>
+</body>
+</html>
