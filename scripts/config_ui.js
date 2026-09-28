@@ -18,8 +18,6 @@ let progressTimer = null;
 let runFinished = false;
 let progressBootstrapped = false;
 let importedReviewImages = [];
-const reviewStatusCache = new Map();
-let reviewStatusHydrationPromise = null;
 
 const progressState = {
   collectedReviews: 0,
@@ -38,7 +36,7 @@ const progressState = {
   failedPlaceCount: 0,
   productivePlaces: 0,
   recentActivity: [],
-  topReviews: [],
+  topPlaces: [],
   placeSummaries: [],
 };
 
@@ -224,59 +222,36 @@ function pushLimited(list, item, max = 8) {
   if (list.length > max) list.length = max;
 }
 
-function rememberTopReview(item) {
-  progressState.topReviews.push(item);
-  progressState.topReviews.sort((a, b) => b.score - a.score);
-  progressState.topReviews = progressState.topReviews.slice(0, 8);
-}
-
-function reviewDetailHref(reviewId) {
-  const value = String(reviewId || "").trim();
-  if (!value) return "";
-  return `/review?id=${encodeURIComponent(value)}`;
-}
-
-function reviewStatusClass(status) {
-  const value = String(status || "").trim().toLowerCase();
-  if (["accepted", "aceptada", "selected", "used"].includes(value)) return "run-live-item--accepted";
-  if (["rejected", "rechazada", "discarded"].includes(value)) return "run-live-item--rejected";
-  return "";
-}
-
-function visibleReviewItems() {
-  return [...progressState.recentActivity, ...progressState.topReviews].filter((item) => item && item.reviewId);
-}
-
-async function hydrateVisibleReviewStatuses() {
-  const items = visibleReviewItems();
-  const reviewIds = [...new Set(items.map((item) => String(item.reviewId || "").trim()).filter(Boolean))];
-  if (!reviewIds.length) return;
-  if (reviewStatusHydrationPromise) {
-    await reviewStatusHydrationPromise;
-    return;
+function upsertRecentActivity(item) {
+  if (item.placeKey) {
+    progressState.recentActivity = progressState.recentActivity.filter(
+      (entry) => entry.placeKey !== item.placeKey,
+    );
   }
-  reviewStatusHydrationPromise = (async () => {
-    try {
-      const res = await fetch(`/api/review-statuses?ids=${encodeURIComponent(reviewIds.join(","))}`);
-      if (!res.ok) return;
-      const payload = await res.json();
-      const statuses = payload?.statuses || {};
-      for (const reviewId of reviewIds) {
-        reviewStatusCache.set(reviewId, String(statuses[reviewId] || "").trim().toLowerCase());
-      }
-      items.forEach((item) => {
-        const reviewId = String(item.reviewId || "").trim();
-        if (!reviewId) return;
-        if (reviewStatusCache.has(reviewId)) item.status = reviewStatusCache.get(reviewId) || "";
-      });
-      renderLiveDashboard();
-    } catch (err) {
-      return;
-    } finally {
-      reviewStatusHydrationPromise = null;
-    }
-  })();
-  await reviewStatusHydrationPromise;
+  pushLimited(progressState.recentActivity, item);
+}
+
+function upsertTopPlace(item) {
+  const existing = progressState.topPlaces.find((entry) => entry.placeKey === item.placeKey);
+  const merged = {
+    ...(existing || {}),
+    ...item,
+    score: Math.max(Number(existing?.score || 0), Number(item.score || 0)),
+    reviewCount: Math.max(Number(existing?.reviewCount || 0), Number(item.reviewCount || 0)),
+    qualifyingCount: Number(existing?.qualifyingCount || 0) + Number(item.qualifyingIncrement || 0),
+  };
+  delete merged.qualifyingIncrement;
+  progressState.topPlaces = progressState.topPlaces.filter((entry) => entry.placeKey !== item.placeKey);
+  progressState.topPlaces.push(merged);
+  progressState.topPlaces.sort((a, b) => b.score - a.score || b.reviewCount - a.reviewCount);
+  progressState.topPlaces = progressState.topPlaces.slice(0, 8);
+  return merged;
+}
+
+function placeDetailHref(placeId) {
+  const value = String(placeId || "").trim();
+  if (!value) return "";
+  return `/place?id=${encodeURIComponent(value)}`;
 }
 
 function upsertPlaceSummary(item) {
@@ -321,31 +296,31 @@ function renderLiveDashboard() {
     progressState.recentActivity,
     "Todavía no hay actividad registrada en esta ejecución.",
     (item) => `
-      <div class="run-live-item ${reviewStatusClass(item.status)}">
+      <div class="run-live-item">
         <div class="run-live-item-head">
           <div class="run-live-item-title">${item.href ? `<a href="${item.href}" target="_blank" rel="noopener">${item.title}</a>` : item.title}</div>
           <div class="run-live-item-score">${item.badge || ""}</div>
         </div>
         <div class="run-live-item-meta">${item.meta || ""}</div>
         <div class="run-live-item-copy">${item.copy || ""}</div>
-        ${item.href ? `<div><a class="run-live-link" href="${item.href}" target="_blank" rel="noopener">Abrir reseña</a></div>` : ""}
+        ${item.href ? `<div><a class="run-live-link" href="${item.href}">Abrir sitio</a></div>` : ""}
       </div>
     `,
   );
 
   renderList(
     "run-top-list",
-    progressState.topReviews,
-    "Las mejores reseñas aparecerán aquí cuando el scorer encuentre material interesante.",
+    progressState.topPlaces,
+    "Los sitios con mejores reseñas aparecerán aquí cuando el scorer encuentre material interesante.",
     (item) => `
-      <div class="run-live-item ${reviewStatusClass(item.status)}">
+      <div class="run-live-item run-live-place-item">
         <div class="run-live-item-head">
-          <div class="run-live-item-title">${item.href ? `<a href="${item.href}" target="_blank" rel="noopener">${item.reviewer || "Autor desconocido"}</a>` : (item.reviewer || "Autor desconocido")}</div>
+          <div class="run-live-item-title">${item.href ? `<a href="${item.href}">${item.place || "Sitio desconocido"}</a>` : (item.place || "Sitio desconocido")}</div>
           <div class="run-live-item-score">#${item.score}</div>
         </div>
-        <div class="run-live-item-meta">${item.place || "Sitio desconocido"}</div>
-        <div class="run-live-item-copy">${item.copy}</div>
-        ${item.href ? `<div><a class="run-live-link" href="${item.href}" target="_blank" rel="noopener">Abrir reseña</a></div>` : ""}
+        <div class="run-live-item-meta">${item.reviewCount || 0} reseñas puntuadas · ${item.qualifyingCount || 0} candidatas</div>
+        <div class="run-live-item-copy">${item.latestReviewer ? `Última reseña: ${item.latestReviewer}.` : "Sitio procesado durante esta ejecución."}</div>
+        ${item.href ? `<div><a class="run-live-link" href="${item.href}">Abrir sitio</a></div>` : ""}
       </div>
     `,
   );
@@ -355,13 +330,14 @@ function renderLiveDashboard() {
     progressState.placeSummaries,
     "Verás aquí un resumen de cada sitio en cuanto termine de procesarse.",
     (item) => `
-      <div class="run-live-item">
+      <div class="run-live-item run-live-place-item">
         <div class="run-live-item-head">
-          <div class="run-live-item-title">${item.place}</div>
+          <div class="run-live-item-title">${item.href ? `<a href="${item.href}">${item.place}</a>` : item.place}</div>
           <div class="run-live-item-score">${item.badge}</div>
         </div>
         <div class="run-live-item-meta">${item.meta}</div>
         <div class="run-live-item-copy">${item.copy}</div>
+        ${item.href ? `<div><a class="run-live-link" href="${item.href}">Abrir sitio</a></div>` : ""}
       </div>
     `,
   );
@@ -475,7 +451,6 @@ function updateEta() {
 
 function resetLiveProgress() {
   if (!has("live-stage")) return;
-  reviewStatusCache.clear();
   progressState.collectedReviews = 0;
   progressState.aboveThreshold = 0;
   progressState.processedSites = 0;
@@ -492,7 +467,7 @@ function resetLiveProgress() {
   progressState.failedPlaceCount = 0;
   progressState.productivePlaces = 0;
   progressState.recentActivity = [];
-  progressState.topReviews = [];
+  progressState.topPlaces = [];
   progressState.placeSummaries = [];
   setText("live-stage", "Iniciando");
   setText("live-sites", "0");
@@ -567,11 +542,13 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
     if (event.event === "discovered_place") {
       setText("live-stage", "Descubriendo sitios");
       setText("live-place", event.place_name || event.place_id || byId("live-place")?.textContent || "-");
-      pushLimited(progressState.recentActivity, {
+      upsertRecentActivity({
+        placeKey: event.place_id || event.place_name,
         title: event.place_name || "Sitio descubierto",
         badge: "Sitio",
         meta: event.category || "Sin categoría",
         copy: "Entró en la cola de análisis.",
+        href: placeDetailHref(event.place_id),
       });
     }
     if (event.event === "sites_found") {
@@ -582,11 +559,13 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       setText("live-stage", "Recopilando reseñas");
       setText("live-place", event.place_name || event.place_id || "-");
       if (!progressState.lastScoreText) setText("live-scores", "Buscando reseñas nuevas para puntuar");
-      pushLimited(progressState.recentActivity, {
+      upsertRecentActivity({
+        placeKey: event.place_id || event.place_name,
         title: event.place_name || event.place_id || "Sitio en proceso",
         badge: "Leyendo",
         meta: "Inicio de recogida",
         copy: "Comenzando a recopilar reseñas de este sitio.",
+        href: placeDetailHref(event.place_id),
       });
     }
     if ((event.event === "api_cache_hit" || event.event === "api_response") && event.api === "google_maps_reviews") {
@@ -604,7 +583,6 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       progressState.totalScore += numericScore;
       progressState.topScore = progressState.topScore == null ? numericScore : Math.max(progressState.topScore, numericScore);
       const threshold = has("humor_threshold") ? Number(fieldValue("humor_threshold", 0)) : configNumber("app.humor_threshold", 0);
-      const statusValue = numericScore >= threshold ? "new" : "rejected";
       if (numericScore >= threshold) {
         progressState.aboveThreshold += 1;
         setText("live-above-threshold", String(progressState.aboveThreshold));
@@ -613,25 +591,25 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       progressState.lastScoreText = reviewerName ? `${reviewerName}: ${scoreLabel}` : scoreLabel;
       setText("live-scores", progressState.lastScoreText);
       const reviewCopy = reviewerName
-        ? `${reviewerName} en ${event.place_name || "sitio actual"}`
-        : `Nueva reseña puntuada en ${event.place_name || "sitio actual"}`;
-      pushLimited(progressState.recentActivity, {
-        title: "Reseña puntuada",
-        badge: scoreLabel,
-        meta: event.place_name || event.place_id || "Sitio",
-        copy: reviewCopy,
-        reviewId: event.review_id || "",
-        href: reviewDetailHref(event.review_id),
-        status: statusValue,
-      });
-      rememberTopReview({
-        reviewer: reviewerName,
+        ? `Última reseña puntuada: ${reviewerName}.`
+        : "Nueva reseña puntuada en este sitio.";
+      const placeKey = event.place_id || event.place_name || `place-${progressState.processedSites}`;
+      const topPlace = upsertTopPlace({
+        placeKey,
         place: event.place_name || event.place_id || "Sitio",
         score: numericScore,
-        copy: `Reseña ${event.review_count || progressState.scoredReviews} del sitio actual.`,
-        reviewId: event.review_id || "",
-        href: reviewDetailHref(event.review_id),
-        status: statusValue,
+        reviewCount: Number(event.review_count || 1),
+        qualifyingIncrement: numericScore >= threshold ? 1 : 0,
+        latestReviewer: reviewerName,
+        href: placeDetailHref(event.place_id),
+      });
+      upsertRecentActivity({
+        placeKey,
+        title: topPlace.place,
+        badge: `#${topPlace.score}`,
+        meta: `${topPlace.reviewCount} reseñas puntuadas · mejor #${topPlace.score}`,
+        copy: reviewCopy,
+        href: topPlace.href,
       });
     }
     if (event.event === "place_done") {
@@ -646,18 +624,31 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         setText("live-scores", "Sin reseñas nuevas puntuadas en este sitio");
       }
       const topScore = scores.length ? Math.max(...scores) : null;
+      const placeKey = event.place_id || event.place_name || `place-${progressState.processedSites}`;
+      if (topScore != null) {
+        upsertTopPlace({
+          placeKey,
+          place: event.place_name || event.place_id || "Sitio",
+          score: topScore,
+          reviewCount: scores.length,
+          href: placeDetailHref(event.place_id),
+        });
+      }
       upsertPlaceSummary({
-        placeKey: event.place_id || event.place_name || `place-${progressState.processedSites}`,
+        placeKey,
         place: event.place_name || event.place_id || "Sitio",
-        badge: scores.length ? `${scores.length} reseñas` : "Vacío",
+        badge: topScore == null ? "Vacío" : `#${topScore}`,
         meta: topScore == null ? "Sin nuevas reseñas útiles" : `Mejor puntuación #${topScore}`,
         copy: scores.length ? `Se puntuaron ${scores.length} reseña(s) en este sitio.` : "No entraron reseñas nuevas en esta pasada.",
+        href: placeDetailHref(event.place_id),
       });
-      pushLimited(progressState.recentActivity, {
+      upsertRecentActivity({
+        placeKey,
         title: event.place_name || event.place_id || "Sitio completado",
-        badge: scores.length ? `${scores.length}` : "0",
+        badge: topScore == null ? "0" : `#${topScore}`,
         meta: scores.length ? `Top #${topScore}` : "Sin señal nueva",
         copy: scores.length ? `Se cerró el sitio con ${scores.length} reseñas puntuadas.` : "El sitio terminó sin reseñas nuevas.",
+        href: placeDetailHref(event.place_id),
       });
     }
     if (event.event === "place_failed") {
@@ -667,18 +658,22 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       setText("live-stage", "Error en un sitio");
       setText("live-place", event.place_name || event.place_id || byId("live-place")?.textContent || "-");
       setText("status", `Falló la recogida en ${event.place_name || event.place_id || "un sitio"}.`);
+      const placeKey = event.place_id || event.place_name || `failed-${progressState.processedSites}`;
       upsertPlaceSummary({
-        placeKey: event.place_id || event.place_name || `failed-${progressState.processedSites}`,
+        placeKey,
         place: event.place_name || event.place_id || "Sitio",
         badge: "Error",
         meta: "Fallo de recogida",
         copy: String(event.error || "Error no especificado"),
+        href: placeDetailHref(event.place_id),
       });
-      pushLimited(progressState.recentActivity, {
+      upsertRecentActivity({
+        placeKey,
         title: event.place_name || event.place_id || "Error en sitio",
         badge: "Error",
         meta: "Recogida fallida",
         copy: String(event.error || "Error no especificado"),
+        href: placeDetailHref(event.place_id),
       });
     }
     if (event.event === "search_failed") {
@@ -792,7 +787,6 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
     }
     renderLiveDashboard();
   });
-  hydrateVisibleReviewStatuses();
 }
 
 async function pollProgress() {
