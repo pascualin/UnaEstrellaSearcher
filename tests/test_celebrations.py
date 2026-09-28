@@ -12,7 +12,11 @@ from unittest.mock import Mock, patch
 from humor_reviews.celebration_calendar import fetch_observances, parse_observances_html
 from humor_reviews.celebration_calendar import Observance
 from humor_reviews.celebration_relevance import RelevanceResult, score_celebration_relevance
-from humor_reviews.celebration_strategy import CelebrationStrategy, SearchPlan
+from humor_reviews.celebration_strategy import (
+    CelebrationStrategy,
+    SearchPlan,
+    build_celebration_strategy_from_text,
+)
 from humor_reviews.collect import RawReview
 from humor_reviews.discover import DiscoveredPlace
 from humor_reviews.humor import HumorResult
@@ -59,11 +63,12 @@ MODERN_HTML = """
 """
 
 
-def _settings() -> ScoringSettings:
+def _settings(provider: str = "typesafe") -> ScoringSettings:
+    uses_typesafe = provider == "typesafe"
     return ScoringSettings(
-        provider="typesafe",
-        model="jev-latest",
-        api_key_env="TYPESAFE_API_KEY",
+        provider=provider,
+        model="jev-latest" if uses_typesafe else "gpt-test",
+        api_key_env="TYPESAFE_API_KEY" if uses_typesafe else "OPENAI_API_KEY",
         prompt="",
         reasoning_effort="none",
         reasoning_mode="standard",
@@ -159,7 +164,7 @@ class CelebrationRelevanceTests(unittest.TestCase):
                 "Chocolatería Central",
                 "chocolate_shop",
                 ["Día Internacional del Chocolate"],
-                _settings(),
+                _settings("openai"),
             )
 
         self.assertEqual(result.score, 84)
@@ -167,6 +172,48 @@ class CelebrationRelevanceTests(unittest.TestCase):
         request = openai.return_value.responses.create.call_args.kwargs
         self.assertEqual(request["model"], "planning-test")
         self.assertIn("No valores si es graciosa", request["instructions"])
+
+    @patch("humor_reviews.celebration_relevance.OpenAI")
+    def test_typesafe_configuration_uses_local_relevance(self, openai: Mock) -> None:
+        result = score_celebration_relevance(
+            "El pulpo estaba duro como una piedra.",
+            "",
+            "Pulpería Central",
+            "restaurant",
+            ["Día Internacional del Pulpo"],
+            _settings("typesafe"),
+        )
+
+        openai.assert_not_called()
+        self.assertGreaterEqual(result.score, 60)
+        self.assertEqual(result.observance, "Día Internacional del Pulpo")
+
+
+class CelebrationStrategyTests(unittest.TestCase):
+    @patch("humor_reviews.celebration_strategy.OpenAI")
+    def test_typesafe_configuration_builds_strategy_without_openai(self, openai: Mock) -> None:
+        strategy = build_celebration_strategy_from_text(
+            "Día Internacional del Pulpo\nDía Internacional de la Dislexia\nSemana Mundial del Espacio",
+            _settings("typesafe"),
+        )
+
+        openai.assert_not_called()
+        self.assertEqual(len(strategy.selected_observances), 3)
+        self.assertIn("restaurante de pulpo", [item.query for item in strategy.searches])
+        self.assertIn("planetario", [item.query for item in strategy.searches])
+
+    @patch("humor_reviews.celebration_strategy.OpenAI")
+    def test_openai_quota_error_has_actionable_message(self, openai: Mock) -> None:
+        openai.return_value.chat.completions.create.side_effect = RuntimeError(
+            "credit_balance_exhausted"
+        )
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            with self.assertRaisesRegex(RuntimeError, "OpenAI no tiene saldo"):
+                build_celebration_strategy_from_text(
+                    "Día Internacional del Pulpo",
+                    _settings("openai"),
+                )
 
 
 class EpisodeSearchTests(unittest.TestCase):

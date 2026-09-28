@@ -171,6 +171,20 @@ def _append_progress_log(path: Path, event: str, payload: dict) -> None:
         return
 
 
+def _friendly_process_failure(stderr: str) -> str:
+    message = str(stderr or "").casefold()
+    if "insufficient_quota" in message or "credit_balance_exhausted" in message:
+        return (
+            "OpenAI no tiene saldo de API. Añade créditos o configura TypeSafe Jev "
+            "con TYPESAFE_API_KEY."
+        )
+    if "missing openai_api_key" in message:
+        return "Falta OPENAI_API_KEY para usar el modelo de OpenAI seleccionado."
+    if "missing typesafe_api_key" in message:
+        return "Falta TYPESAFE_API_KEY para usar TypeSafe Jev."
+    return "La ejecución se interrumpió. Consulta el detalle técnico del registro."
+
+
 def _ui_auth_credentials() -> tuple[str, str] | None:
     username = os.getenv("CONFIG_UI_USERNAME", "").strip()
     password = os.getenv("CONFIG_UI_PASSWORD", "").strip()
@@ -2126,7 +2140,10 @@ class Handler(BaseHTTPRequestHandler):
                     _append_progress_log(
                         log_path,
                         "run_failed",
-                        {"returncode": result.returncode},
+                        {
+                            "returncode": result.returncode,
+                            "message": _friendly_process_failure(result.stderr),
+                        },
                     )
 
             threading.Thread(target=_runner, daemon=True).start()
@@ -2194,7 +2211,10 @@ class Handler(BaseHTTPRequestHandler):
                     _append_progress_log(
                         log_path,
                         "run_failed",
-                        {"returncode": result.returncode},
+                        {
+                            "returncode": result.returncode,
+                            "message": _friendly_process_failure(result.stderr),
+                        },
                     )
 
             threading.Thread(target=_episode_runner, daemon=True).start()

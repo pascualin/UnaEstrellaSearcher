@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,15 +27,33 @@ class CelebrationStrategy:
     searches: list[SearchPlan]
 
 
+LOCAL_QUERY_RULES = [
+    (("pulpo",), ("restaurante de pulpo", "marisquería")),
+    (("dislexia",), ("asociación de dislexia", "centro de apoyo a la dislexia")),
+    (("vision", "vista"), ("óptica", "clínica oftalmológica")),
+    (("podolog",), ("podólogo", "clínica de podología")),
+    (("espacio", "astronom"), ("planetario", "museo del espacio")),
+    (("chocolate",), ("chocolatería", "tienda de chocolate")),
+    (("paella",), ("restaurante de paella", "arrocería")),
+    (("cafe",), ("cafetería", "tostador de café")),
+    (("libro", "bibliotec"), ("librería", "biblioteca")),
+    (("musica",), ("sala de conciertos", "tienda de música")),
+    (("turismo", "viaje"), ("atracción turística", "visita guiada")),
+]
+
+
 def build_celebration_strategy(
     observances: list[dict[str, str]],
     settings: ScoringSettings,
 ) -> CelebrationStrategy:
-    api_key, model = openai_planning_config(settings)
-    client = OpenAI(api_key=api_key)
     payload = observances
 
+    if (settings.provider or "").strip().lower() not in {"openai"}:
+        return _build_local_strategy(observances, "Planificación local para el proveedor elegido.")
+
     try:
+        api_key, model = openai_planning_config(settings)
+        client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -118,9 +137,15 @@ def build_celebration_strategy(
         )
         data = _parse_strategy_payload(response)
     except Exception as exc:  # pragma: no cover - network/runtime issues
-        raise RuntimeError(
-            f"Strategy generation failed: {exc.__class__.__name__}: {exc}"
-        ) from exc
+        if _is_openai_quota_error(exc):
+            raise RuntimeError(
+                "OpenAI no tiene saldo de API. Añade créditos o configura TypeSafe Jev "
+                "con TYPESAFE_API_KEY para puntuar las reseñas."
+            ) from exc
+        return _build_local_strategy(
+            observances,
+            f"Planificación local porque OpenAI no estaba disponible ({exc.__class__.__name__}).",
+        )
 
     searches = [
         SearchPlan(
@@ -137,6 +162,76 @@ def build_celebration_strategy(
         notes=str(data.get("notes") or "").strip(),
         searches=searches,
     )
+
+
+def _build_local_strategy(
+    observances: list[dict[str, str]],
+    notes: str,
+) -> CelebrationStrategy:
+    names = list(
+        dict.fromkeys(
+            str(item.get("name") or "").strip()
+            for item in observances
+            if str(item.get("name") or "").strip()
+        )
+    )
+    searches: list[SearchPlan] = []
+    seen_queries: set[str] = set()
+    for name in names:
+        topic = _observance_topic(name)
+        normalized_topic = _normalize(topic)
+        queries: tuple[str, ...] = ()
+        for keywords, candidates in LOCAL_QUERY_RULES:
+            if any(keyword in normalized_topic for keyword in keywords):
+                queries = candidates
+                break
+        if not queries:
+            queries = (topic, f"museo {topic}")
+        for query in queries:
+            normalized_query = _normalize(query)
+            if not normalized_query or normalized_query in seen_queries:
+                continue
+            seen_queries.add(normalized_query)
+            searches.append(
+                SearchPlan(
+                    query=query,
+                    region="Spain",
+                    rationale=f"Búsqueda relacionada con {name}.",
+                )
+            )
+            if len(searches) >= 12:
+                break
+        if len(searches) >= 12:
+            break
+    return CelebrationStrategy(
+        selected_observances=names,
+        discarded_observances=[],
+        notes=notes,
+        searches=searches,
+    )
+
+
+def _observance_topic(name: str) -> str:
+    topic = re.sub(
+        r"^(?:día|semana|noche|jornada)\s+"
+        r"(?:(?:internacional|mundial|global|europe[oa]|nacional)\s+)*"
+        r"(?:(?:de|del|de la|de los|de las)\s+)?",
+        "",
+        str(name or "").strip(),
+        flags=re.IGNORECASE,
+    ).strip(" .#")
+    return topic or str(name or "").strip()
+
+
+def _normalize(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", str(value or ""))
+    ascii_text = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", ascii_text.casefold()).split())
+
+
+def _is_openai_quota_error(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return "insufficient_quota" in message or "credit_balance_exhausted" in message
 
 
 def build_celebration_strategy_from_text(

@@ -226,9 +226,9 @@ PYTHONPATH=. .venv/bin/python -m humor_reviews.run episode-search \
 
 La relevancia se guarda por ejecución y celebración. Una reseña que supere el
 umbral de humor pero no el de relevancia permanece pendiente en la base de datos
-para poder utilizarla en otro episodio. La planificación y la relevancia usan
-`OPENAI_API_KEY`; opcionalmente se puede elegir su modelo mediante
-`OPENAI_PLANNING_MODEL`.
+para poder utilizarla en otro episodio. Con TypeSafe, la planificación y la
+relevancia temática tienen un modo local que no requiere OpenAI. Con OpenAI se
+usa `OPENAI_PLANNING_MODEL` para esas tareas cuando está disponible.
 
 ## Interfaz web local
 

@@ -39,6 +39,7 @@ const progressState = {
   productivePlaces: 0,
   recentActivity: [],
   topPlaces: [],
+  failed: false,
 };
 
 function setText(id, value) {
@@ -274,7 +275,7 @@ function renderLiveDashboard() {
   const placeSuccessRate = progressState.processedSites > 0 ? (progressState.productivePlaces / progressState.processedSites) * 100 : 0;
   const statusText = byId("live-stage")?.textContent || "En espera";
 
-  setText("run-status-chip", runFinished ? "Completado" : statusText);
+  setText("run-status-chip", progressState.failed ? "Error" : (runFinished ? "Completado" : statusText));
   setText("run-current-query", progressState.currentQuery || "Sin búsqueda activa");
   setText("run-current-region", progressState.currentRegion || "Esperando arranque");
   setText("run-throughput", `${throughput.toFixed(1)} reseñas/min`);
@@ -450,6 +451,7 @@ function resetLiveProgress() {
   progressState.productivePlaces = 0;
   progressState.recentActivity = [];
   progressState.topPlaces = [];
+  progressState.failed = false;
   setText("live-stage", "Iniciando");
   setText("live-sites", "0");
   setText("live-place", "-");
@@ -779,6 +781,7 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
     }
     if (event.event === "run_started") {
       runFinished = false;
+      progressState.failed = false;
       resetLiveProgress();
       setText("live-stage", "Ejecutando");
       setText("status", "Ejecutando pipeline...");
@@ -793,15 +796,17 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
     }
     if (event.event === "run_failed") {
       runFinished = true;
+      progressState.failed = true;
       setText("live-stage", "Error");
-      setText("status", "Falló la ejecución. Revisa el log.");
+      setText("status", event.message || "Falló la ejecución. Revisa el log.");
       if (progressTimer) clearInterval(progressTimer);
       pushLimited(progressState.recentActivity, {
         title: "Ejecución fallida",
         badge: "Error",
         meta: "Pipeline detenido",
-        copy: "La ejecución se interrumpió antes de terminar.",
+        copy: event.message || "La ejecución se interrumpió antes de terminar.",
       });
+      renderLiveDashboard();
     }
     if (event.event === "process_output" && event.stream === "stderr") {
       const text = String(event.text || "");
