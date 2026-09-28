@@ -30,9 +30,14 @@ providers:
     gl: es
 
 scoring:
+  # Use "typesafe", "jev-latest" and "TYPESAFE_API_KEY" to score with Jev.
   provider: openai
   model: gpt-5.2
   api_key_env: OPENAI_API_KEY
+  reasoning_effort: none
+  reasoning_mode: standard
+  verbosity: low
+  service_tier: auto
   temperature: 0.2
   max_output_tokens: 320
   prompt: |

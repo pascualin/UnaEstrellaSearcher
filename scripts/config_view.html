@@ -50,14 +50,50 @@
               </div>
 
               <div class="card app-card">
-                <h2>Puntuación (OpenAI)</h2>
+                <h2 id="scoring-heading">Puntuación</h2>
                 <div class="compact-form-grid">
-                  <div class="compact-field compact-field--full">
+                  <div class="compact-field">
+                    <label>Proveedor</label>
+                    <select id="scoring_provider">
+                      <option value="openai">OpenAI</option>
+                      <option value="typesafe">TypeSafe (Jev)</option>
+                    </select>
+                  </div>
+                  <div class="compact-field">
                     <label>Modelo</label>
-                    <input id="scoring_model" type="text" />
+                    <select id="scoring_model"></select>
+                    <div class="field-note" id="scoring-model-status" aria-live="polite"></div>
                   </div>
                   <div class="compact-field compact-field--full">
-                    <label>Prompt</label>
+                    <label>Variable de API key</label>
+                    <input id="scoring_api_key_env" type="text" />
+                  </div>
+                  <div class="compact-field" id="reasoning-effort-field" hidden>
+                    <label>Esfuerzo de razonamiento</label>
+                    <select id="scoring_reasoning_effort"></select>
+                  </div>
+                  <div class="compact-field" id="reasoning-mode-field" hidden>
+                    <label>Modo de razonamiento</label>
+                    <select id="scoring_reasoning_mode"></select>
+                  </div>
+                  <div class="compact-field" id="verbosity-field" hidden>
+                    <label>Verbosidad</label>
+                    <select id="scoring_verbosity"></select>
+                  </div>
+                  <div class="compact-field" id="service-tier-field" hidden>
+                    <label>Nivel de servicio</label>
+                    <select id="scoring_service_tier"></select>
+                  </div>
+                  <div class="compact-field" id="temperature-field" hidden>
+                    <label>Temperatura</label>
+                    <input id="scoring_temperature" type="number" min="0" max="2" step="0.1" />
+                  </div>
+                  <div class="compact-field" id="max-output-tokens-field" hidden>
+                    <label>Máx. tokens de salida</label>
+                    <input id="scoring_max_output_tokens" type="number" min="320" step="1" />
+                  </div>
+                  <div class="compact-field compact-field--full">
+                    <label>Criterios de puntuación</label>
                     <textarea id="prompt"></textarea>
                   </div>
                 </div>

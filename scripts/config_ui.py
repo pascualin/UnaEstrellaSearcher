@@ -10,6 +10,7 @@ import re
 import socket
 import sqlite3
 import threading
+import time
 from datetime import datetime
 from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -23,6 +24,7 @@ import yaml
 from humor_reviews.collect import _serpapi_reviews
 from humor_reviews.humor import score_review
 from humor_reviews.notion_sync import NotionSyncError, append_review_image, create_review_page
+from humor_reviews.openai_models import openai_model_catalog
 from humor_reviews.safety import assess_safety
 from humor_reviews.settings import load_settings
 from humor_reviews.storage import Place, Review, Storage
@@ -57,6 +59,8 @@ GOOGLE_REVIEW_HOSTS = {
 IMAGE_IMPORT_MAX_BYTES = 12 * 1024 * 1024
 IMAGE_IMPORT_MAX_FILES = 8
 IMAGE_IMPORT_TOTAL_MAX_BYTES = 32 * 1024 * 1024
+OPENAI_MODEL_CACHE_TTL_SECONDS = 300
+_openai_model_cache: dict[str, Any] = {"key": "", "expires_at": 0.0, "payload": None}
 
 
 def _load_env(path: Path) -> None:
@@ -88,6 +92,51 @@ def _write_config(payload: Dict[str, Any]) -> None:
         yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
+
+
+def _openai_scoring_models() -> dict[str, Any]:
+    cfg = _load_config()
+    scoring = cfg.get("scoring", {}) or {}
+    api_key_env = str(scoring.get("api_key_env") or "OPENAI_API_KEY").strip()
+    api_key = os.getenv(api_key_env, "").strip()
+    cache_key = f"{api_key_env}:{bool(api_key)}"
+    if (
+        _openai_model_cache["key"] == cache_key
+        and _openai_model_cache["expires_at"] > time.monotonic()
+        and _openai_model_cache["payload"]
+    ):
+        return _openai_model_cache["payload"]
+    if not api_key:
+        payload = {
+            "models": openai_model_catalog(),
+            "source": "catalog",
+            "warning": f"No se encontro {api_key_env}; se muestra el catalogo general.",
+        }
+        _cache_openai_models(cache_key, payload)
+        return payload
+    try:
+        client = OpenAI(api_key=api_key, timeout=10.0, max_retries=0)
+        available_ids = [model.id for model in client.models.list()]
+        models = openai_model_catalog(available_ids)
+        if models:
+            payload = {"models": models, "source": "account", "warning": ""}
+            _cache_openai_models(cache_key, payload)
+            return payload
+    except Exception:
+        pass
+    payload = {
+        "models": openai_model_catalog(),
+        "source": "catalog",
+        "warning": "No se pudo consultar la cuenta; se muestra el catalogo general.",
+    }
+    _cache_openai_models(cache_key, payload)
+    return payload
+
+
+def _cache_openai_models(cache_key: str, payload: dict[str, Any]) -> None:
+    _openai_model_cache["key"] = cache_key
+    _openai_model_cache["expires_at"] = time.monotonic() + OPENAI_MODEL_CACHE_TTL_SECONDS
+    _openai_model_cache["payload"] = payload
 
 
 def _db_path() -> Path:
@@ -1529,6 +1578,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/config":
             cfg = _load_config()
             self._send(200, json.dumps(cfg).encode("utf-8"), "application/json")
+            return
+        if self.path == "/api/scoring-models":
+            payload = _openai_scoring_models()
+            self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
             return
         if self.path.startswith("/api/progress"):
             log_path = _progress_log_path()

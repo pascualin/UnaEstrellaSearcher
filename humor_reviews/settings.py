@@ -42,6 +42,10 @@ class ScoringSettings:
     model: str
     api_key_env: str
     prompt: str
+    reasoning_effort: str
+    reasoning_mode: str
+    verbosity: str
+    service_tier: str
     temperature: float
     max_output_tokens: int
 
@@ -109,10 +113,16 @@ def load_settings(path: str | Path = "config.yaml") -> Settings:
         serpapi_gl=country_code,
     )
 
+    scoring_provider = str(scoring_raw.get("provider", "openai")).strip().lower() or "openai"
+    uses_typesafe = scoring_provider in {"typesafe", "jev"}
+    default_scoring_model = "jev-latest" if uses_typesafe else "gpt-5.2"
+    default_scoring_api_key_env = (
+        "TYPESAFE_API_KEY" if uses_typesafe else "OPENAI_API_KEY"
+    )
     scoring = ScoringSettings(
-        provider=str(scoring_raw.get("provider", "openai")),
-        model=str(scoring_raw.get("model", "gpt-5.2")),
-        api_key_env=str(scoring_raw.get("api_key_env", "OPENAI_API_KEY")),
+        provider=scoring_provider,
+        model=str(scoring_raw.get("model", default_scoring_model)),
+        api_key_env=str(scoring_raw.get("api_key_env", default_scoring_api_key_env)),
         prompt=str(
             scoring_raw.get(
                 "prompt",
@@ -131,6 +141,10 @@ def load_settings(path: str | Path = "config.yaml") -> Settings:
                 ),
             )
         ),
+        reasoning_effort=str(scoring_raw.get("reasoning_effort", "none")).strip().lower(),
+        reasoning_mode=str(scoring_raw.get("reasoning_mode", "standard")).strip().lower(),
+        verbosity=str(scoring_raw.get("verbosity", "low")).strip().lower(),
+        service_tier=str(scoring_raw.get("service_tier", "auto")).strip().lower(),
         temperature=float(scoring_raw.get("temperature", 0.2)),
         max_output_tokens=int(scoring_raw.get("max_output_tokens", 160)),
     )

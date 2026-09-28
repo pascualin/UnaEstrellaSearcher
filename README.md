@@ -47,7 +47,7 @@ El proyecto está pensado para este flujo:
 - Python 3.9+
 - `pip`
 - una cuenta de SerpApi con cuota disponible
-- una clave de OpenAI si quieres scoring con LLM
+- una clave de OpenAI o TypeSafe si quieres scoring automático
 - una integración de Notion si quieres sincronización automática
 
 ## Instalación
@@ -73,6 +73,9 @@ El proyecto usa un `.env` en la raíz.
 - `OPENAI_API_KEY`
   Necesaria para el scoring con OpenAI.
 
+- `TYPESAFE_API_KEY`
+  Necesaria para el scoring con TypeSafe Jev.
+
 - `NOTION_ACCESS_TOKEN`
   Necesaria para crear páginas en Notion.
 
@@ -87,6 +90,7 @@ Ejemplo:
 ```bash
 SERPAPI_API_KEY=...
 OPENAI_API_KEY=...
+TYPESAFE_API_KEY=...
 NOTION_ACCESS_TOKEN=...
 NOTION_DATABASE_ID=...
 NOTION_AREA_PAGE_ID=...
@@ -103,6 +107,38 @@ set +a
 ## Configuración
 
 La configuración vive en `config.yaml`.
+
+### Elegir el modelo de puntuación
+
+La UI permite elegir el proveedor, el modelo y la variable de entorno que contiene la API key. Para usar OpenAI:
+
+```yaml
+scoring:
+  provider: openai
+  model: gpt-5.4
+  api_key_env: OPENAI_API_KEY
+  reasoning_effort: none
+  reasoning_mode: standard
+  verbosity: low
+  service_tier: auto
+```
+
+Al abrir la configuración, el selector consulta `GET /v1/models` con la clave indicada y muestra los modelos de texto disponibles para esa cuenta. Si no puede consultar la cuenta, usa el catálogo general como respaldo. No admite texto libre, para evitar errores al escribir el identificador.
+
+Los controles de ejecución se adaptan al modelo elegido: esfuerzo y modo de razonamiento, verbosidad, nivel de servicio, temperatura y límite de tokens. Las combinaciones incompatibles se ocultan; por ejemplo, la temperatura solo aparece en modelos sin razonamiento o cuando el esfuerzo es `none`. El scorer usa la [Responses API](https://developers.openai.com/api/reference/responses/create) y las capacidades publicadas en el [catálogo oficial de modelos](https://developers.openai.com/api/docs/models/all).
+
+Para usar TypeSafe Jev:
+
+```yaml
+scoring:
+  provider: typesafe
+  model: jev-latest
+  api_key_env: TYPESAFE_API_KEY
+```
+
+Jev usa el mismo texto de `prompt` como contexto de evaluación. Su respuesta `score` emplea once niveles ordenados (0–10), que el proyecto convierte a la escala 0–100. Jev también elige una etiqueta principal de humor. Como Jev devuelve decisiones estructuradas y no genera texto libre, deja vacío el resumen de la reseña y guarda la confianza del score en `humor_notes`.
+
+Puedes crear la clave y consultar los modelos disponibles en la [documentación oficial de TypeSafe](https://docs.typesafe.ai/) y en su endpoint `GET /v1/models`.
 
 Desde la UI puedes ajustar, entre otras cosas:
 
@@ -345,11 +381,11 @@ La UI, el pipeline y la sincronización con Notion trabajan sobre esa base.
 
 - SerpApi puede responder correctamente pero fallar por cuota si la cuenta no tiene búsquedas disponibles.
 - El filtrado por región se hace tanto en la query como en una validación local posterior.
-- Las llamadas a OpenAI son opcionales y dependen de `OPENAI_API_KEY`.
+- Las llamadas de scoring son opcionales y dependen de `OPENAI_API_KEY` o `TYPESAFE_API_KEY`, según el proveedor elegido.
 - La UI local es la forma recomendada de revisión manual.
 - El comando CLI `set-status` existe todavía con nomenclatura antigua y no es el flujo recomendado para moderación manual; la UI refleja mejor el modelo actual.
 
-## Test rápido de scoring OpenAI
+## Test rápido de scoring
 
 ```bash
 PYTHONPATH=. .venv/bin/python scripts/test_score.py
