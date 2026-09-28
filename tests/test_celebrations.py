@@ -11,7 +11,11 @@ from unittest.mock import Mock, patch
 
 from humor_reviews.celebration_calendar import fetch_observances, parse_observances_html
 from humor_reviews.celebration_calendar import Observance
-from humor_reviews.celebration_relevance import RelevanceResult, score_celebration_relevance
+from humor_reviews.celebration_relevance import (
+    RelevanceResult,
+    score_celebration_relevance,
+    score_celebration_relevance_local,
+)
 from humor_reviews.celebration_strategy import (
     CelebrationStrategy,
     SearchPlan,
@@ -147,7 +151,7 @@ class CelebrationRelevanceTests(unittest.TestCase):
         openai.return_value.responses.create.return_value = Mock(
             output_text=json.dumps(
                 {
-                    "score": 84,
+                    "score": 99,
                     "observance": "Día Internacional del Chocolate",
                     "notes": "Ocurre en una chocolatería.",
                 }
@@ -167,7 +171,7 @@ class CelebrationRelevanceTests(unittest.TestCase):
                 _settings("openai"),
             )
 
-        self.assertEqual(result.score, 84)
+        self.assertEqual(result.score, 99)
         self.assertEqual(result.observance, "Día Internacional del Chocolate")
         request = openai.return_value.responses.create.call_args.kwargs
         self.assertEqual(request["model"], "planning-test")
@@ -185,6 +189,18 @@ class CelebrationRelevanceTests(unittest.TestCase):
         )
 
         openai.assert_not_called()
+        self.assertGreaterEqual(result.score, 60)
+        self.assertEqual(result.observance, "Día Internacional del Pulpo")
+
+    def test_local_relevance_recognizes_place_name_variants(self) -> None:
+        result = score_celebration_relevance_local(
+            "El servicio fue un desastre.",
+            "",
+            "La Pulpería de Victoria",
+            "restaurant",
+            ["Día Internacional del Pulpo"],
+        )
+
         self.assertGreaterEqual(result.score, 60)
         self.assertEqual(result.observance, "Día Internacional del Pulpo")
 

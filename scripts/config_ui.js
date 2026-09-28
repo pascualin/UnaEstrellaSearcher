@@ -40,6 +40,8 @@ const progressState = {
   recentActivity: [],
   topPlaces: [],
   failed: false,
+  archivedChecked: 0,
+  archivedTotal: 0,
 };
 
 function setText(id, value) {
@@ -452,6 +454,8 @@ function resetLiveProgress() {
   progressState.recentActivity = [];
   progressState.topPlaces = [];
   progressState.failed = false;
+  progressState.archivedChecked = 0;
+  progressState.archivedTotal = 0;
   setText("live-stage", "Iniciando");
   setText("live-sites", "0");
   setText("live-place", "-");
@@ -590,6 +594,26 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         meta: selected.join(" · "),
         copy: "La estrategia está lista y comienza revisando el archivo existente.",
       });
+    }
+    if (event.event === "archive_scan_started") {
+      progressState.archivedChecked = 0;
+      progressState.archivedTotal = Number(event.total || 0);
+      setText("live-stage", "Revisando reseñas guardadas");
+      setText(
+        "status",
+        progressState.archivedTotal
+          ? `Revisando ${progressState.archivedTotal} reseñas graciosas ya guardadas antes de buscar sitios nuevos.`
+          : "No hay reseñas guardadas que revisar. Preparando búsquedas nuevas.",
+      );
+    }
+    if (event.event === "archive_scan_progress") {
+      progressState.archivedChecked = Number(event.checked || 0);
+      progressState.archivedTotal = Number(event.total || progressState.archivedTotal);
+      setText("live-stage", "Revisando reseñas guardadas");
+      setText(
+        "status",
+        `Archivo: ${progressState.archivedChecked}/${progressState.archivedTotal} revisadas.`,
+      );
     }
     if (event.event === "discovered_place") {
       setText("live-stage", "Descubriendo sitios");

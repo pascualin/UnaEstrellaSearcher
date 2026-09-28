@@ -8,7 +8,11 @@ from datetime import date
 from pathlib import Path
 
 from .celebration_calendar import fetch_observances
-from .celebration_relevance import RelevanceResult, score_celebration_relevance
+from .celebration_relevance import (
+    RelevanceResult,
+    score_celebration_relevance,
+    score_celebration_relevance_local,
+)
 from .celebration_strategy import CelebrationStrategy, build_celebration_strategy_from_text
 from .collect import collect_reviews
 from .discover import SearchQuery, discover_places, discover_places_for_queries
@@ -411,22 +415,60 @@ def run_episode_search(
     relevant_review_ids: set[str] = set()
     place_map = storage.get_place_map()
     if selected_observances:
-        archived = storage.fetch_candidates(humor_threshold, allow_repeat=True)
-        for review in archived[:max_archived_candidates]:
-            if review.safety_label == "not_recommended":
-                continue
+        archived = [
+            review
+            for review in storage.fetch_candidates(humor_threshold, allow_repeat=True)
+            if review.safety_label != "not_recommended"
+        ][:max_archived_candidates]
+        ranked_archived = []
+        for original_index, review in enumerate(archived):
             place = place_map.get(review.place_id)
-            relevance = _score_theme_relevance(
-                review,
-                place,
+            local_relevance = score_celebration_relevance_local(
+                review.translated_text or review.text,
+                review.translated_owner_reply or review.owner_reply,
+                place.name if place else "",
+                place.category if place else "",
                 selected_observances,
-                settings,
             )
+            ranked_archived.append(
+                (local_relevance.score, original_index, review, place, local_relevance)
+            )
+        ranked_archived.sort(key=lambda item: (-item[0], item[1]))
+        semantic_checks = 0
+        max_semantic_checks = min(8, len(ranked_archived))
+        _emit_progress(
+            "archive_scan_started",
+            {
+                "total": len(ranked_archived),
+                "semantic_limit": max_semantic_checks,
+            },
+        )
+        for checked_count, (_, _, review, place, local_relevance) in enumerate(
+            ranked_archived,
+            start=1,
+        ):
+            relevance = local_relevance
+            if relevance.score < relevance_threshold and semantic_checks < max_semantic_checks:
+                relevance = _score_theme_relevance(
+                    review,
+                    place,
+                    selected_observances,
+                    settings,
+                )
+                semantic_checks += 1
             candidate = relevance.score >= relevance_threshold
             if candidate:
                 relevant_review_ids.add(review.review_id)
             matches.append(_theme_match(review.review_id, relevance, candidate, "archive"))
             _emit_theme_review(review, place, relevance, candidate, "archive")
+            _emit_progress(
+                "archive_scan_progress",
+                {
+                    "checked": checked_count,
+                    "total": len(ranked_archived),
+                    "semantic_checks": semantic_checks,
+                },
+            )
             if len(relevant_review_ids) >= target_reviews:
                 break
 

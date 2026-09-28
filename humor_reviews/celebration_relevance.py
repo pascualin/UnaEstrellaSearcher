@@ -19,6 +19,16 @@ class RelevanceResult:
     notes: str
 
 
+RELEVANCE_ALIASES = {
+    "pulpo": ("pulperia", "pulpeira", "octopus"),
+    "dislexia": ("dislexia", "logopedia", "dyslexia"),
+    "vision": ("optica", "oftalm", "oculista", "vista"),
+    "podologia": ("podolog", "podologo", "podologa", "feet", "foot"),
+    "espacio": ("planetario", "astronom", "alien", "cosmic", "cosmico"),
+    "chocolate": ("chocolate", "chocolateria", "cacao"),
+}
+
+
 def score_celebration_relevance(
     review_text: str,
     owner_reply: str,
@@ -27,6 +37,13 @@ def score_celebration_relevance(
     observances: list[str],
     settings: ScoringSettings,
 ) -> RelevanceResult:
+    local_result = score_celebration_relevance_local(
+        review_text,
+        owner_reply,
+        place_name,
+        place_category,
+        observances,
+    )
     if (settings.provider or "").strip().lower() == "openai":
         try:
             api_key, model = openai_planning_config(settings)
@@ -69,23 +86,18 @@ def score_celebration_relevance(
                 store=False,
             )
             payload = _response_payload(response)
-            return RelevanceResult(
+            model_result = RelevanceResult(
                 score=max(0, min(100, int(payload.get("score") or 0))),
                 observance=str(payload.get("observance") or "").strip(),
                 notes=str(payload.get("notes") or "").strip(),
             )
+            return model_result if model_result.score >= local_result.score else local_result
         except Exception:
             pass
-    return _local_relevance(
-        review_text,
-        owner_reply,
-        place_name,
-        place_category,
-        observances,
-    )
+    return local_result
 
 
-def _local_relevance(
+def score_celebration_relevance_local(
     review_text: str,
     owner_reply: str,
     place_name: str,
@@ -105,6 +117,7 @@ def _local_relevance(
         "dia", "semana", "internacional", "mundial", "global", "nacional",
         "del", "de", "la", "las", "los", "el", "y", "para", "contra",
     }
+    haystack_words = set(haystack.split())
     best = RelevanceResult(0, "", "No se encontró relación temática directa.")
     for observance in observances:
         normalized = unicodedata.normalize("NFKD", observance)
@@ -116,17 +129,28 @@ def _local_relevance(
             for token in re.findall(r"[a-z0-9]+", normalized)
             if token not in stopwords and len(token) >= 4
         ]
-        matched = [token for token in tokens if token in haystack]
+        matched = [token for token in tokens if token in haystack_words]
+        alias_matches: list[str] = []
+        for token in tokens:
+            aliases = RELEVANCE_ALIASES.get(token, ())
+            alias_matches.extend(alias for alias in aliases if alias in haystack)
+            if len(token) >= 5 and any(word.startswith(token[:4]) for word in haystack_words):
+                matched.append(token)
+        matched = list(dict.fromkeys(matched))
+        alias_matches = list(dict.fromkeys(alias_matches))
         score = 0
         if tokens and len(matched) == len(tokens):
             score = 95
+        elif alias_matches:
+            score = 85
         elif matched:
             score = min(90, 60 + (30 * len(matched) // max(1, len(tokens))))
         if score > best.score:
+            evidence = matched or alias_matches
             best = RelevanceResult(
                 score,
                 observance,
-                f"Coincidencia temática local: {', '.join(matched)}.",
+                f"Coincidencia temática local: {', '.join(evidence)}.",
             )
     return best
 
