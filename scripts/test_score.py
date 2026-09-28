@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 
 from humor_reviews.humor import score_review
-from humor_reviews.settings import ScoringSettings
+from humor_reviews.settings import load_settings
 
 
 def _load_env(path: Path) -> None:
@@ -20,8 +20,11 @@ def _load_env(path: Path) -> None:
 
 def main() -> None:
     _load_env(Path(".env"))
-    if not os.getenv("OPENAI_API_KEY"):
-        raise SystemExit("OPENAI_API_KEY not set in environment or .env")
+    settings = load_settings()
+    if not os.getenv(settings.scoring.api_key_env):
+        raise SystemExit(
+            f"{settings.scoring.api_key_env} not set in environment or .env"
+        )
 
     text = (
         "El señor mayor farmacéutico que me atendió muy prepotente y desagradable, "
@@ -32,27 +35,7 @@ def main() -> None:
     )
     owner_reply = ""
 
-    settings = ScoringSettings(
-        provider="openai",
-        model="gpt-4o-mini",
-        api_key_env="OPENAI_API_KEY",
-        prompt=(
-            "Evalua UNA resena individual y devuelve SOLO una puntuacion de humor.\n"
-            "Devuelve un entero de 0 a 100 donde 0 es nada gracioso y 100 es muy gracioso.\n"
-            "Prioriza resenas de una estrella si son graciosas.\n"
-            "Nuestro humor es gamberro: insultos, situaciones dantescas y anecdotas graciosas.\n"
-            "Si hay respuesta del propietario graciosa y no es copia y pega, sube la puntuacion.\n"
-            "Si no hay nada gracioso, pon una puntuacion baja.\n"
-            "No incluyas explicaciones ni texto extra.\n\n"
-            "ESTRELLAS:\n{rating}\n\n"
-            "RESENA:\n{review_text}\n\n"
-            "RESPUESTA DEL PROPIETARIO:\n{owner_reply}"
-        ),
-        temperature=0.2,
-        max_output_tokens=20,
-    )
-
-    result = score_review(text, owner_reply, 1, settings)
+    result = score_review(text, owner_reply, 1, settings.scoring)
     print(result)
 
 

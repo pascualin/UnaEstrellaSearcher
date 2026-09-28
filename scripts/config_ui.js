@@ -3,6 +3,15 @@ const has = (id) => Boolean(byId(id));
 const textToList = (text) => String(text || "").split("\n").map((s) => s.trim()).filter(Boolean);
 const listToText = (list) => (list || []).join("\n");
 
+const scoringModels = {
+  openai: [],
+  typesafe: [{ id: "jev-latest" }],
+};
+const scoringApiKeyEnvs = {
+  openai: "OPENAI_API_KEY",
+  typesafe: "TYPESAFE_API_KEY",
+};
+
 let appConfig = null;
 let progressOffset = 0;
 let progressTimer = null;
@@ -47,6 +56,129 @@ function fieldValue(id, fallback = "") {
 function setFieldValue(id, value) {
   const el = byId(id);
   if (el) el.value = value;
+}
+
+function replaceSelectOptions(id, values, selectedValue, defaultValue = "") {
+  const select = byId(id);
+  if (!select) return "";
+  const normalizedValues = values.map((value) => typeof value === "string" ? { value, label: value } : value);
+  select.replaceChildren(...normalizedValues.map((item) => {
+    const option = document.createElement("option");
+    option.value = item.value;
+    option.textContent = item.label;
+    return option;
+  }));
+  const allowed = normalizedValues.map((item) => item.value);
+  const nextValue = allowed.includes(selectedValue) ? selectedValue : (allowed.includes(defaultValue) ? defaultValue : allowed[0] || "");
+  select.value = nextValue;
+  return nextValue;
+}
+
+function currentOpenAIProfile() {
+  const model = fieldValue("scoring_model").trim();
+  return scoringModels.openai.find((item) => item.id === model) || null;
+}
+
+function updateOpenAIExecutionControls({ resetDefaults = false } = {}) {
+  const isOpenAI = fieldValue("scoring_provider", "openai") === "openai";
+  const profile = isOpenAI ? currentOpenAIProfile() : null;
+  const controls = [
+    "reasoning-effort-field",
+    "reasoning-mode-field",
+    "verbosity-field",
+    "service-tier-field",
+    "temperature-field",
+    "max-output-tokens-field",
+  ];
+  controls.forEach((id) => {
+    const element = byId(id);
+    if (element) element.hidden = !isOpenAI;
+  });
+  if (!isOpenAI || !profile) return;
+
+  const effortOptions = profile.reasoning_efforts || [];
+  const modeOptions = profile.reasoning_modes || [];
+  const verbosityOptions = profile.verbosity_options || [];
+  const tierOptions = profile.service_tiers || [];
+  const selectedEffort = replaceSelectOptions(
+    "scoring_reasoning_effort",
+    effortOptions.map((value) => ({ value, label: value === "none" ? "none (sin razonamiento)" : value })),
+    resetDefaults ? "" : fieldValue("scoring_reasoning_effort"),
+    profile.default_reasoning_effort,
+  );
+  replaceSelectOptions(
+    "scoring_reasoning_mode",
+    modeOptions.map((value) => ({ value, label: value === "standard" ? "standard" : "pro" })),
+    resetDefaults ? "" : fieldValue("scoring_reasoning_mode"),
+    profile.default_reasoning_mode,
+  );
+  replaceSelectOptions(
+    "scoring_verbosity",
+    verbosityOptions,
+    resetDefaults ? "" : fieldValue("scoring_verbosity"),
+    profile.default_verbosity,
+  );
+  replaceSelectOptions(
+    "scoring_service_tier",
+    tierOptions,
+    resetDefaults ? "" : fieldValue("scoring_service_tier"),
+    profile.default_service_tier,
+  );
+
+  byId("reasoning-effort-field").hidden = effortOptions.length === 0;
+  byId("reasoning-mode-field").hidden = modeOptions.length === 0;
+  byId("verbosity-field").hidden = verbosityOptions.length === 0;
+  byId("service-tier-field").hidden = tierOptions.length === 0;
+  byId("temperature-field").hidden = !profile.supports_temperature || (effortOptions.length > 0 && selectedEffort !== "none");
+}
+
+async function refreshScoringModels({ resetDefaults = false, selectedModel = "" } = {}) {
+  if (!has("scoring_provider")) return;
+  const provider = fieldValue("scoring_provider", "openai") || "openai";
+  if (provider === "openai") {
+    setText("scoring-model-status", "Consultando modelos disponibles...");
+    try {
+      const response = await fetch("/api/scoring-models");
+      if (!response.ok) throw new Error("model_list_failed");
+      const payload = await response.json();
+      scoringModels.openai = payload.models || [];
+      setText(
+        "scoring-model-status",
+        payload.source === "account" ? "Disponibles para esta cuenta de OpenAI." : (payload.warning || "Catálogo general de OpenAI."),
+      );
+    } catch (error) {
+      scoringModels.openai = selectedModel ? [{ id: selectedModel }] : [];
+      setText("scoring-model-status", "No se pudo cargar el catálogo de OpenAI.");
+    }
+  } else {
+    setText("scoring-model-status", "");
+  }
+  const models = scoringModels[provider] || [];
+  const currentModel = selectedModel || fieldValue("scoring_model").trim();
+  const modelOptions = [...models];
+  if (currentModel && !modelOptions.some((item) => item.id === currentModel)) {
+    modelOptions.unshift({ id: currentModel, unavailable: true });
+  }
+  const modelSelect = byId("scoring_model");
+  if (modelSelect) {
+    modelSelect.replaceChildren(...modelOptions.map((model) => {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = model.unavailable ? `${model.id} (configurado; no disponible)` : model.id;
+      return option;
+    }));
+    const defaultModel = models[0]?.id || "";
+    modelSelect.value = resetDefaults ? defaultModel : (currentModel || defaultModel);
+  }
+  if (resetDefaults) {
+    const currentApiKeyEnv = fieldValue("scoring_api_key_env").trim();
+    const knownApiKeyEnvs = Object.values(scoringApiKeyEnvs);
+    if (!currentApiKeyEnv || knownApiKeyEnvs.includes(currentApiKeyEnv)) {
+      setFieldValue("scoring_api_key_env", scoringApiKeyEnvs[provider] || "");
+    }
+  }
+  setText("scoring-heading", provider === "typesafe" ? "Puntuación (TypeSafe Jev)" : "Puntuación (OpenAI)");
+  updateOpenAIExecutionControls({ resetDefaults });
 }
 
 function currentCategories() {
@@ -248,58 +380,79 @@ async function loadConfig() {
   setFieldValue("name_contains", cfg.discovery?.name_contains || "");
   setFieldValue("categories", listToText(cfg.discovery?.categories));
   setFieldValue("min_total_reviews", cfg.discovery?.min_total_reviews || 0);
-  setFieldValue("scoring_model", cfg.scoring?.model || "");
+  setFieldValue("scoring_provider", cfg.scoring?.provider || "openai");
+  setFieldValue(
+    "scoring_api_key_env",
+    cfg.scoring?.api_key_env || scoringApiKeyEnvs[cfg.scoring?.provider || "openai"],
+  );
+  setFieldValue("scoring_reasoning_effort", cfg.scoring?.reasoning_effort || "none");
+  setFieldValue("scoring_reasoning_mode", cfg.scoring?.reasoning_mode || "standard");
+  setFieldValue("scoring_verbosity", cfg.scoring?.verbosity || "low");
+  setFieldValue("scoring_service_tier", cfg.scoring?.service_tier || "auto");
+  setFieldValue("scoring_temperature", cfg.scoring?.temperature ?? 0.2);
+  setFieldValue("scoring_max_output_tokens", cfg.scoring?.max_output_tokens ?? 320);
   setFieldValue("prompt", cfg.scoring?.prompt || "");
+  await refreshScoringModels({ selectedModel: cfg.scoring?.model || "" });
+  setFieldValue("scoring_reasoning_effort", cfg.scoring?.reasoning_effort || "none");
+  setFieldValue("scoring_reasoning_mode", cfg.scoring?.reasoning_mode || "standard");
+  setFieldValue("scoring_verbosity", cfg.scoring?.verbosity || "low");
+  setFieldValue("scoring_service_tier", cfg.scoring?.service_tier || "auto");
+  updateOpenAIExecutionControls();
   setText("status", "");
 }
 
 async function saveConfig() {
   const normalizedCountry = fieldValue("country").trim().toUpperCase();
-  const payload = {
-    app: {
-      output_dir: "out",
-      data_dir: "data",
-      humor_threshold: Number(fieldValue("humor_threshold", 0)),
-      max_reviews_per_place: Number(fieldValue("max_reviews_per_place", 0)),
-      max_places_per_run: Number(fieldValue("max_places_per_run", 0)),
-      allow_repeat_suggestions: false,
-      locale: "es",
+  const provider = fieldValue("scoring_provider", "openai") || "openai";
+  const payload = JSON.parse(JSON.stringify(appConfig || {}));
+  payload.app = {
+    ...(payload.app || {}),
+    output_dir: "out",
+    data_dir: "data",
+    humor_threshold: Number(fieldValue("humor_threshold", 0)),
+    max_reviews_per_place: Number(fieldValue("max_reviews_per_place", 0)),
+    max_places_per_run: Number(fieldValue("max_places_per_run", 0)),
+    allow_repeat_suggestions: false,
+    locale: "es",
+  };
+  payload.discovery = {
+    ...(payload.discovery || {}),
+    provider: "serpapi_maps",
+    country: normalizedCountry,
+    regions: textToList(fieldValue("regions")),
+    name_contains: fieldValue("name_contains").trim(),
+    categories: textToList(fieldValue("categories")),
+    min_total_reviews: Number(fieldValue("min_total_reviews", 0)),
+    require_recent_days: 3650,
+  };
+  payload.providers = {
+    ...(payload.providers || {}),
+    serpapi: {
+      ...(payload.providers?.serpapi || {}),
+      api_key_env: "SERPAPI_API_KEY",
+      hl: "es",
+      gl: (normalizedCountry || "ES").toLowerCase(),
     },
-    discovery: {
-      provider: "serpapi_maps",
-      country: normalizedCountry,
-      regions: textToList(fieldValue("regions")),
-      name_contains: fieldValue("name_contains").trim(),
-      categories: textToList(fieldValue("categories")),
-      min_total_reviews: Number(fieldValue("min_total_reviews", 0)),
-      require_recent_days: 3650,
-    },
-    providers: {
-      serpapi: {
-        api_key_env: "SERPAPI_API_KEY",
-        hl: "es",
-        gl: (normalizedCountry || "ES").toLowerCase(),
-      },
-    },
-    scoring: {
-      provider: "openai",
-      model: fieldValue("scoring_model").trim(),
-      api_key_env: "OPENAI_API_KEY",
-      temperature: 0.2,
-      max_output_tokens: 320,
-      prompt: fieldValue("prompt"),
-    },
-    safety: {
-      pii_patterns: [],
-      sensitive_keywords: [],
-      accusation_keywords: [],
-    },
+  };
+  payload.scoring = {
+    ...(payload.scoring || {}),
+    provider,
+    model: fieldValue("scoring_model").trim(),
+    api_key_env: fieldValue("scoring_api_key_env").trim() || scoringApiKeyEnvs[provider],
+    reasoning_effort: fieldValue("scoring_reasoning_effort").trim(),
+    reasoning_mode: fieldValue("scoring_reasoning_mode").trim(),
+    verbosity: fieldValue("scoring_verbosity").trim(),
+    service_tier: fieldValue("scoring_service_tier").trim(),
+    temperature: Number(fieldValue("scoring_temperature", 0.2)),
+    max_output_tokens: Number(fieldValue("scoring_max_output_tokens", 320)),
+    prompt: fieldValue("prompt"),
   };
   const res = await fetch("/api/config", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  if (res.ok) appConfig = payload;
   setText("status", res.ok ? "Guardado correctamente." : "Error al guardar.");
 }
 
@@ -389,7 +542,7 @@ function closeNoResults() {
   modal.setAttribute("aria-hidden", "true");
 }
 
-function applyProgressPayload(payload) {
+function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
   if (!has("live-stage")) return;
   (payload.lines || []).forEach((line) => {
     let event;
@@ -555,6 +708,12 @@ function applyProgressPayload(payload) {
         meta: `${event.discovered || 0} sitios · ${event.collected || 0} reseñas`,
         copy: "La ejecución terminó y ya no quedan sitios en cola.",
       });
+      if (showTransientAlerts && Number(event.discovered || 0) === 0 && progressState.noResultsCount > 0) {
+        const nameFilter = String(appConfig?.discovery?.name_contains || "").trim();
+        const searchLabel = progressState.searchCount === 1 ? "1 búsqueda" : `${progressState.searchCount} búsquedas`;
+        const filterDetail = nameFilter ? ` con "${nameFilter}" en el nombre` : "";
+        showNoResults(`La ejecución terminó sin sitios válidos${filterDetail}. Se completaron ${searchLabel}.`);
+      }
     }
     if (event.event === "run_started") {
       runFinished = false;
@@ -597,40 +756,40 @@ function applyProgressPayload(payload) {
       progressState.noResultsCount += 1;
       const region = event.region || "la región";
       const category = describeSearchCategory(event);
-      const isGeneralSearch = category === "búsqueda general";
       if (event.reason === "filtered_out") {
         const bits = [];
         const rawResults = Number(event.raw_results || 0);
         if (rawResults > 0) bits.push(`La API devolvió ${rawResults} sitios, pero todos se descartaron después.`);
         const skippedRegion = Number(event.skipped_region || 0);
+        const skippedNameContains = Number(event.skipped_name_contains || 0);
         const skippedMinReviews = Number(event.skipped_min_reviews || 0);
         const skippedRecent = Number(event.skipped_recent || 0);
         const skippedNoIds = Number(event.skipped_no_ids || 0);
         if (skippedRegion > 0) bits.push(`${skippedRegion} fuera de la región indicada.`);
+        if (skippedNameContains > 0) {
+          const expectedName = String(event.name_contains || "").trim();
+          bits.push(expectedName
+            ? `${skippedNameContains} porque el nombre no contiene "${expectedName}".`
+            : `${skippedNameContains} por no coincidir con el filtro de nombre.`);
+        }
         if (skippedMinReviews > 0) bits.push(`${skippedMinReviews} por no llegar al mínimo de reseñas.`);
         if (skippedRecent > 0) bits.push(`${skippedRecent} por antigüedad de reseñas.`);
-            if (skippedNoIds > 0) bits.push(`${skippedNoIds} por datos incompletos.`);
-            const detail = bits.length ? ` ${bits.join(" ")}` : "";
-            showNoResults(`No quedaron resultados válidos para "${category}" en ${region}.${detail}`);
-            pushLimited(progressState.recentActivity, {
-              title: "Búsqueda sin sitios válidos",
-              badge: "0",
-              meta: `${category} · ${region}`,
-              copy: bits.join(" ") || "La búsqueda devolvió resultados, pero todos se descartaron.",
-            });
-          } else {
-            const advice = isGeneralSearch
-              ? "Prueba con otra región o añade una categoría concreta para orientar mejor la búsqueda."
-              : "Revisa la categoría o prueba con otra región.";
-            showNoResults(`La API no encontró resultados para "${category}" en ${region}. ${advice}`);
-            pushLimited(progressState.recentActivity, {
-              title: "Búsqueda vacía",
-              badge: "0",
-              meta: `${category} · ${region}`,
-              copy: "La API no devolvió resultados para esta consulta.",
-            });
-          }
-        }
+        if (skippedNoIds > 0) bits.push(`${skippedNoIds} por datos incompletos.`);
+        pushLimited(progressState.recentActivity, {
+          title: "Búsqueda sin sitios válidos",
+          badge: "0",
+          meta: `${category} · ${region}`,
+          copy: bits.join(" ") || "La búsqueda devolvió resultados, pero todos se descartaron.",
+        });
+      } else {
+        pushLimited(progressState.recentActivity, {
+          title: "Búsqueda vacía",
+          badge: "0",
+          meta: `${category} · ${region}`,
+          copy: "La API no devolvió resultados para esta consulta.",
+        });
+      }
+    }
     renderLiveDashboard();
   });
   hydrateVisibleReviewStatuses();
@@ -652,7 +811,8 @@ async function bootstrapProgress() {
   const payload = await res.json();
   progressOffset = payload.next_offset || 0;
   runFinished = true;
-  applyProgressPayload(payload);
+  closeNoResults();
+  applyProgressPayload(payload, { showTransientAlerts: false });
   progressBootstrapped = true;
   if (!runFinished && !progressTimer) progressTimer = setInterval(pollProgress, 1200);
 }
@@ -751,6 +911,9 @@ async function importReview() {
 
 function bindEvents() {
   byId("save")?.addEventListener("click", saveConfig);
+  byId("scoring_provider")?.addEventListener("change", () => refreshScoringModels({ resetDefaults: true }));
+  byId("scoring_model")?.addEventListener("change", () => updateOpenAIExecutionControls({ resetDefaults: true }));
+  byId("scoring_reasoning_effort")?.addEventListener("change", updateOpenAIExecutionControls);
   byId("run-weekly")?.addEventListener("click", runWeekly);
   byId("run-dry")?.addEventListener("click", runDryRun);
   byId("import-review-button")?.addEventListener("click", importReview);

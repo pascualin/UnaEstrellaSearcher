@@ -7,9 +7,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict
 
+import requests
 from openai import OpenAI
 
 from .api_logging import emit_api_log, sanitize_for_log
+from .openai_models import openai_model_profile
 from .settings import ScoringSettings
 
 
@@ -21,7 +23,50 @@ class HumorResult:
     summary: str
 
 
+TYPESAFE_SYSTEM_ONE_URL = "https://api.typesafe.ai/v1/systemone"
+JEV_HUMOR_LEVELS = [
+    "Nada gracioso: una queja plana, seria o puramente informativa.",
+    "Casi nada gracioso: apenas hay un detalle con potencial comico.",
+    "Algo gracioso, pero debil, predecible o poco aprovechable.",
+    "Tiene algun detalle divertido, aunque no sostiene un segmento.",
+    "Claramente aprovechable, con una frase o situacion que da juego.",
+    "Buena resena para comentar, pero sin un remate especialmente memorable.",
+    "Muy graciosa: tono, historia o respuesta que funciona bien en el podcast.",
+    "Destaca por exageracion, absurdo, mala leche creativa o un gran contraste.",
+    "Material excelente para el podcast, con varias frases o giros memorables.",
+    "Material excepcional que destaca claramente entre las mejores resenas.",
+    "Extremadamente graciosa: entra seguro en el podcast y da mucho juego comico.",
+]
+JEV_HUMOR_TAGS = {
+    "insultos": "Insultos creativos o mala leche expresada con gracia.",
+    "exageracion": "Dramatismo o reaccion claramente desproporcionada.",
+    "anecdota": "Una historia concreta que escala o tiene un giro divertido.",
+    "situacion_dantesca": "Una situacion caotica, ridicula o desastrosa.",
+    "respuesta_propietario": "La respuesta del propietario aporta la mayor parte del humor.",
+    "ironico": "Ironia, sarcasmo o pasivo-agresividad como recurso principal.",
+    "absurdo": "Una premisa, detalle o desenlace surrealista o absurdo.",
+    "queja_tipica": "Una queja reconocible cuyo humor no encaja mejor en otra categoria.",
+    "poco_gracioso": "No hay un recurso comico claro.",
+}
+
+
 def score_review(
+    text: str,
+    owner_reply: str,
+    rating: int,
+    settings: ScoringSettings,
+) -> HumorResult:
+    provider = (settings.provider or "openai").strip().lower()
+    if provider == "openai":
+        return _score_review_openai(text, owner_reply, rating, settings)
+    if provider in {"typesafe", "jev"}:
+        return _score_review_typesafe(text, owner_reply, rating, settings)
+    raise ValueError(
+        f"Unsupported scoring provider {settings.provider!r}. Use 'openai' or 'typesafe'."
+    )
+
+
+def _score_review_openai(
     text: str,
     owner_reply: str,
     rating: int,
@@ -40,46 +85,77 @@ def score_review(
         owner_reply=(owner_reply or "").strip(),
         rating=rating,
     )
-    request_payload = {
-        "model": settings.model,
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "Devuelve SOLO JSON con: "
-                    "score (entero 0-100), notes (string), tags (array de strings), summary (string corto)."
-                ),
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "response_format": {
+    profile = openai_model_profile(settings.model)
+    reasoning_effort = _supported_option(
+        settings.reasoning_effort,
+        profile["reasoning_efforts"],
+        profile["default_reasoning_effort"],
+    )
+    reasoning_mode = _supported_option(
+        settings.reasoning_mode,
+        profile["reasoning_modes"],
+        profile["default_reasoning_mode"],
+    )
+    verbosity = _supported_option(
+        settings.verbosity,
+        profile["verbosity_options"],
+        profile["default_verbosity"],
+    )
+    service_tier = _supported_option(
+        settings.service_tier,
+        profile["service_tiers"],
+        profile["default_service_tier"],
+    )
+    text_options: dict[str, Any] = {
+        "format": {
             "type": "json_schema",
-            "json_schema": {
-                "name": "humor_score",
-                "strict": True,
-            },
-        },
-        "temperature": settings.temperature,
-        "max_completion_tokens": max(settings.max_output_tokens, 320),
+            "name": "humor_score",
+            "schema": _humor_score_schema(),
+            "strict": True,
+        }
     }
+    if verbosity:
+        text_options["verbosity"] = verbosity
+
+    request_payload: dict[str, Any] = {
+        "model": settings.model,
+        "instructions": (
+            "Devuelve SOLO JSON con: score (entero 0-100), notes (string), "
+            "tags (array de strings), summary (string corto)."
+        ),
+        "input": prompt,
+        "text": text_options,
+        "max_output_tokens": max(settings.max_output_tokens, 320),
+        "store": False,
+    }
+    if reasoning_effort or reasoning_mode:
+        request_payload["reasoning"] = {}
+        if reasoning_effort:
+            request_payload["reasoning"]["effort"] = reasoning_effort
+        if reasoning_mode:
+            request_payload["reasoning"]["mode"] = reasoning_mode
+    if service_tier and service_tier != "auto":
+        request_payload["service_tier"] = service_tier
+    if not profile["reasoning_efforts"] or reasoning_effort == "none":
+        request_payload["temperature"] = settings.temperature
     emit_api_log(
         "api_request",
         {
             "provider": "openai",
-            "api": "chat.completions.create",
+            "api": "responses.create",
             "params": request_payload,
         },
     )
 
     try:
-        response = _create_completion_with_retries(client, request_payload)
-        content = _extract_message_content(response)
+        response = _create_response_with_retries(client, request_payload)
+        content = _extract_response_text(response)
         payload = _parse_payload(content)
         emit_api_log(
             "api_response",
             {
                 "provider": "openai",
-                "api": "chat.completions.create",
+                "api": "responses.create",
                 "model": settings.model,
                 "response": sanitize_for_log(_response_to_mapping(response)),
                 "parsed_payload": payload,
@@ -97,7 +173,7 @@ def score_review(
             "api_error",
             {
                 "provider": "openai",
-                "api": "chat.completions.create",
+                "api": "responses.create",
                 "model": settings.model,
                 "error_type": exc.__class__.__name__,
                 "error": message,
@@ -111,41 +187,170 @@ def score_review(
         )
 
 
-def _extract_message_content(response: Any) -> str:
-    choice = response.choices[0]
-    finish_reason = getattr(choice, "finish_reason", None)
-    if finish_reason == "length":
+def _score_review_typesafe(
+    text: str,
+    owner_reply: str,
+    rating: int,
+    settings: ScoringSettings,
+) -> HumorResult:
+    api_key = os.getenv(settings.api_key_env)
+    if not api_key:
         raise RuntimeError(
-            "Humor response was truncated by the model token limit. "
-            "Increase max_output_tokens for scoring."
+            f"Missing API key env var {settings.api_key_env} for TypeSafe scoring."
         )
-    message = choice.message
-    content = getattr(message, "content", "") or ""
-    if isinstance(content, str) and content.strip():
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text)
-            else:
-                text = getattr(item, "text", None)
-                if isinstance(text, str) and text.strip():
-                    parts.append(text)
-        if parts:
-            return "\n".join(parts)
-    parsed = getattr(message, "parsed", None)
-    if parsed:
+
+    scoring_context = _render_prompt(
+        settings.prompt,
+        review_text=(text or "").strip(),
+        owner_reply=(owner_reply or "").strip(),
+        rating=rating,
+    )
+    request_payload = {
+        "model": settings.model,
+        "state": scoring_context,
+        "questions": {
+            "humor_score": {
+                "type": "score",
+                "instructions": (
+                    "Valora el potencial comico de esta resena para el podcast Una Estrella. "
+                    "Aplica el contexto y los criterios incluidos en el estado."
+                ),
+                "criteria": JEV_HUMOR_LEVELS,
+            },
+            "primary_humor_style": {
+                "type": "choice",
+                "instructions": "Elige el recurso comico principal de la resena.",
+                "criteria": JEV_HUMOR_TAGS,
+            },
+        },
+    }
+    emit_api_log(
+        "api_request",
+        {
+            "provider": "typesafe",
+            "api": "systemone",
+            "params": request_payload,
+        },
+    )
+
+    try:
+        response = _post_typesafe_with_retries(api_key, request_payload)
+        payload = response.json()
+        answers = payload.get("answers") or {}
+        score_answer = answers.get("humor_score") or {}
+        style_answer = answers.get("primary_humor_style") or {}
+        score = _clamp_score(round(float(score_answer["score"]) * 10))
+        confidence = float(score_answer.get("confidence", 0.0))
+        primary_tag = str(style_answer.get("choice") or "misc").strip() or "misc"
+        emit_api_log(
+            "api_response",
+            {
+                "provider": "typesafe",
+                "api": "systemone",
+                "model": payload.get("model", settings.model),
+                "response": sanitize_for_log(payload),
+            },
+        )
+        return HumorResult(
+            score=score,
+            notes=f"Jev score (confidence {confidence:.0%})",
+            tags=[primary_tag],
+            summary="",
+        )
+    except Exception as exc:  # pragma: no cover - network/runtime issues
+        message = _redact_secrets(str(exc), [api_key])
+        emit_api_log(
+            "api_error",
+            {
+                "provider": "typesafe",
+                "api": "systemone",
+                "model": settings.model,
+                "error_type": exc.__class__.__name__,
+                "error": message,
+            },
+        )
+        return HumorResult(
+            score=0,
+            notes=(
+                f"LLM error: {exc.__class__.__name__} - {message}"
+                if message
+                else f"LLM error: {exc.__class__.__name__}"
+            ),
+            tags=["llm_error"],
+            summary="",
+        )
+
+
+def _post_typesafe_with_retries(
+    api_key: str,
+    request_payload: dict[str, Any],
+) -> requests.Response:
+    attempts = 3
+    delay_seconds = 1.0
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
         try:
-            return json.dumps(parsed)
-        except TypeError:
-            if hasattr(parsed, "model_dump"):
-                return json.dumps(parsed.model_dump())
-    refusal = getattr(message, "refusal", None)
-    if refusal:
-        return json.dumps({"notes": f"Model refusal: {refusal}", "score": 0, "tags": ["refusal"], "summary": ""})
+            response = requests.post(
+                TYPESAFE_SYSTEM_ONE_URL,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=request_payload,
+                timeout=(10, 60),
+            )
+            if response.status_code == 429 or response.status_code >= 500:
+                response.raise_for_status()
+            if response.status_code >= 400:
+                response.raise_for_status()
+            return response
+        except requests.RequestException as exc:
+            last_exc = exc
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            retryable = status_code == 429 or (status_code is not None and status_code >= 500)
+            retryable = retryable or status_code is None
+            if attempt >= attempts or not retryable:
+                raise
+            time.sleep(delay_seconds * attempt)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("TypeSafe request failed without an exception.")
+
+
+def _supported_option(value: str, options: list[str], default: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in options:
+        return normalized
+    return default if default in options else ""
+
+
+def _humor_score_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "score": {"type": "integer", "minimum": 0, "maximum": 100},
+            "notes": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "summary": {"type": "string"},
+        },
+        "required": ["score", "notes", "tags", "summary"],
+        "additionalProperties": False,
+    }
+
+
+def _extract_response_text(response: Any) -> str:
+    status = str(getattr(response, "status", "") or "").lower()
+    if status == "incomplete":
+        details = getattr(response, "incomplete_details", None)
+        reason = getattr(details, "reason", "") if details else ""
+        raise RuntimeError(
+            "Humor response was incomplete"
+            + (f" ({reason})" if reason else "")
+            + ". Increase max_output_tokens or reduce reasoning effort."
+        )
+    output_text = getattr(response, "output_text", "") or ""
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
     dumped = _response_to_mapping(response)
     content = _find_text_in_mapping(dumped)
     if content:
@@ -246,23 +451,21 @@ def _render_prompt(template: str, review_text: str, owner_reply: str, rating: in
     return rendered
 
 
-def _create_completion_with_retries(client: OpenAI, request_payload: dict[str, Any]) -> Any:
+def _create_response_with_retries(client: OpenAI, request_payload: dict[str, Any]) -> Any:
     attempts = 3
     delay_seconds = 1.5
     last_exc: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return _create_completion(client, request_payload, include_temperature=True)
+            return client.responses.create(**request_payload)
         except Exception as exc:  # pragma: no cover - network/runtime issues
-            if _is_unsupported_temperature_error(exc):
-                return _create_completion(client, request_payload, include_temperature=False)
             last_exc = exc
             if attempt >= attempts or not _is_retryable_openai_error(exc):
                 raise
             time.sleep(delay_seconds * attempt)
     if last_exc is not None:
         raise last_exc
-    raise RuntimeError("OpenAI completion failed without an exception.")
+    raise RuntimeError("OpenAI response failed without an exception.")
 
 
 def _is_retryable_openai_error(exc: Exception) -> bool:
@@ -279,45 +482,6 @@ def _is_retryable_openai_error(exc: Exception) -> bool:
         "server error",
     ]
     return any(marker in message for marker in retry_markers)
-
-
-def _is_unsupported_temperature_error(exc: Exception) -> bool:
-    message = str(exc).lower()
-    return "unsupported value" in message and "temperature" in message
-
-
-def _create_completion(
-    client: OpenAI,
-    request_payload: dict[str, Any],
-    *,
-    include_temperature: bool,
-) -> Any:
-    kwargs: dict[str, Any] = {
-        "model": request_payload["model"],
-        "messages": request_payload["messages"],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "humor_score",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "score": {"type": "integer", "minimum": 0, "maximum": 100},
-                        "notes": {"type": "string"},
-                        "tags": {"type": "array", "items": {"type": "string"}},
-                        "summary": {"type": "string"},
-                    },
-                    "required": ["score", "notes", "tags", "summary"],
-                    "additionalProperties": False,
-                },
-                "strict": True,
-            },
-        },
-        "max_completion_tokens": request_payload["max_completion_tokens"],
-    }
-    if include_temperature:
-        kwargs["temperature"] = request_payload["temperature"]
-    return client.chat.completions.create(**kwargs)
 
 
 def _extract_json_object(value: str) -> str:

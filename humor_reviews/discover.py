@@ -199,7 +199,7 @@ def discover_places(
         )
 
     min_recent_date = datetime.utcnow() - timedelta(days=discovery.require_recent_days)
-    categories = _effective_categories(discovery.categories)
+    categories = _effective_categories(discovery.categories, discovery.name_contains)
 
     regions = discovery.regions or [""]
     for region in regions:
@@ -252,6 +252,7 @@ def discover_places(
 
             kept = 0
             skipped_no_ids = 0
+            skipped_name_contains = 0
             skipped_min_reviews = 0
             skipped_region = 0
             skipped_recent = 0
@@ -260,6 +261,9 @@ def discover_places(
                 data_id = str(place_raw.get("data_id") or "")
                 if not place_id and not data_id:
                     skipped_no_ids += 1
+                    continue
+                if not _name_matches(place_raw, discovery.name_contains):
+                    skipped_name_contains += 1
                     continue
                 if region and not _region_matches(place_raw, region):
                     skipped_region += 1
@@ -314,6 +318,8 @@ def discover_places(
                         "raw_results": len(results),
                         "reason": "filtered_out",
                         "skipped_no_ids": skipped_no_ids,
+                        "skipped_name_contains": skipped_name_contains,
+                        "name_contains": discovery.name_contains,
                         "skipped_min_reviews": skipped_min_reviews,
                         "skipped_region": skipped_region,
                         "skipped_recent": skipped_recent,
@@ -370,6 +376,8 @@ def discover_places_for_queries(
             },
         )
         for place_raw in results:
+            if not _name_matches(place_raw, discovery.name_contains):
+                continue
             place = _build_place(place_raw, item.category, min_recent_date.date(), discovery.min_total_reviews)
             if place is None:
                 continue
@@ -388,10 +396,12 @@ def _normalize_category(category: str) -> str:
     return str(category or "").strip().lower().replace("_", " ")
 
 
-def _effective_categories(categories: list[str] | None) -> list[str]:
+def _effective_categories(categories: list[str] | None, name_contains: str = "") -> list[str]:
     cleaned = [str(item or "").strip() for item in (categories or []) if str(item or "").strip()]
     if cleaned:
         return cleaned
+    if str(name_contains or "").strip():
+        return [""]
     return GENERAL_SEARCH_SEEDS.copy()
 
 
@@ -412,6 +422,21 @@ def _build_query(category: str, name_contains: str, region: str) -> str:
     if region:
         return f"places in {region}"
     return "places"
+
+
+def _name_matches(place_raw: dict, name_contains: str) -> bool:
+    expected = _normalize_match_text(name_contains)
+    if not expected:
+        return True
+    place_name = place_raw.get("title") or place_raw.get("name") or ""
+    return expected in _normalize_match_text(str(place_name))
+
+
+def _normalize_match_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    normalized = re.sub(r"[\W_]+", " ", normalized.casefold(), flags=re.UNICODE)
+    return re.sub(r"\s+", " ", normalized).strip()
 
 
 def _progress_category_label(category: str, query: str) -> str:
