@@ -66,7 +66,8 @@ class Storage:
                     place_url TEXT,
                     notion_page_id TEXT,
                     notion_page_url TEXT,
-                    notion_exported_at TEXT
+                    notion_exported_at TEXT,
+                    processed_at TEXT
                 )
                 """
             )
@@ -145,6 +146,8 @@ class Storage:
             conn.execute("ALTER TABLE places ADD COLUMN notion_page_url TEXT")
         if "notion_exported_at" not in columns:
             conn.execute("ALTER TABLE places ADD COLUMN notion_exported_at TEXT")
+        if "processed_at" not in columns:
+            conn.execute("ALTER TABLE places ADD COLUMN processed_at TEXT")
 
     def _ensure_review_columns(self, conn: sqlite3.Connection) -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()}

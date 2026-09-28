@@ -410,6 +410,8 @@ PYTHONPATH=. .venv/bin/python scripts/test_score.py
 - `scripts/config_view.html`
   Vista de configuración.
 - `scripts/db_view.html`
-  Listado y resumen de reseñas.
+  Listado de sitios con filtros de procesado y orden por puntuación o actualización.
+- `scripts/place_detail.html`
+  Moderación de reseñas, exportación a Notion y cierre o reapertura del sitio.
 - `scripts/review_detail.html`
   Vista de detalle y acciones de moderación.

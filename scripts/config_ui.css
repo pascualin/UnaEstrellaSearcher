@@ -1655,6 +1655,21 @@ body {
   opacity: 0.45;
   cursor: not-allowed;
 }
+.place-detail-actions .place-processed-button {
+  background: #236b5c;
+  border-color: #236b5c;
+  color: #ffffff;
+}
+.place-detail-actions .place-processed-button.is-reopen {
+  background: #ffffff;
+  border-color: rgba(17, 25, 34, 0.18);
+  color: #16202a;
+}
+.app-page .place-result-counts .is-processed,
+.place-detail-counts .is-processed {
+  background: #dcefe7;
+  color: #25634f;
+}
 .place-review-list {
   display: grid;
   gap: 12px;

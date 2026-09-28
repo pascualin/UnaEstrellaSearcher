@@ -35,17 +35,16 @@
                 <p class="hint">Resumen de ingestión y contenido.</p>
               </div>
               <div class="db-controls app-filter-bar" style="margin-left: auto;">
-                <label class="hint" for="review-sort">Ordenar por</label>
-                <select id="review-sort">
+                <label class="hint" for="place-sort">Ordenar sitios por</label>
+                <select id="place-sort">
                   <option value="humor_score">Puntuación de humor</option>
                   <option value="updated_at">Última actualización</option>
                 </select>
-                <label class="hint" for="status-filter">Estado</label>
-                <select id="status-filter">
-                  <option value="pending">Vacío</option>
-                  <option value="accepted">Aceptada</option>
-                  <option value="rejected">Rechazada</option>
-                  <option value="all">Todas</option>
+                <label class="hint" for="processed-filter">Estado del sitio</label>
+                <select id="processed-filter">
+                  <option value="unprocessed">Pendientes de procesar</option>
+                  <option value="processed">Procesados</option>
+                  <option value="all">Todos</option>
                 </select>
               </div>
             </div>
@@ -61,27 +60,27 @@
   </div>
   <script>
     const byId = (id) => document.getElementById(id);
-    const reviewSort = byId("review-sort");
-    const statusFilter = byId("status-filter");
+    const placeSort = byId("place-sort");
+    const processedFilter = byId("processed-filter");
     const SESSION_KEYS = {
-      reviewSort: "db.reviewSort",
-      statusFilter: "db.statusFilter",
+      placeSort: "db.placeSort",
+      processedFilter: "db.processedFilter",
     };
 
     function loadFilterState() {
-      const storedSort = sessionStorage.getItem(SESSION_KEYS.reviewSort);
-      if (storedSort) {
-        reviewSort.value = storedSort;
+      const storedSort = sessionStorage.getItem(SESSION_KEYS.placeSort);
+      if ([...placeSort.options].some((option) => option.value === storedSort)) {
+        placeSort.value = storedSort;
       }
-      const storedStatus = sessionStorage.getItem(SESSION_KEYS.statusFilter);
-      if (storedStatus) {
-        statusFilter.value = storedStatus;
+      const storedProcessed = sessionStorage.getItem(SESSION_KEYS.processedFilter);
+      if ([...processedFilter.options].some((option) => option.value === storedProcessed)) {
+        processedFilter.value = storedProcessed;
       }
     }
 
     function persistFilterState() {
-      sessionStorage.setItem(SESSION_KEYS.reviewSort, reviewSort.value);
-      sessionStorage.setItem(SESSION_KEYS.statusFilter, statusFilter.value);
+      sessionStorage.setItem(SESSION_KEYS.placeSort, placeSort.value);
+      sessionStorage.setItem(SESSION_KEYS.processedFilter, processedFilter.value);
     }
 
     function escapeHtml(value) {
@@ -94,6 +93,15 @@
       })[char]);
     }
 
+    function formatUpdatedAt(value) {
+      const date = new Date(String(value || ""));
+      if (Number.isNaN(date.getTime())) return "";
+      return new Intl.DateTimeFormat("es-ES", {
+        dateStyle: "short",
+        timeStyle: "short",
+      }).format(date);
+    }
+
     function renderPlaces(container, rows) {
       if (!rows || rows.length === 0) {
         container.innerHTML = "<div class='place-results-empty'>No hay sitios con reseñas para este filtro.</div>";
@@ -104,6 +112,8 @@
         const address = escapeHtml(row.place_address || "Sin dirección");
         const category = escapeHtml(row.place_category || "Lugar");
         const placeId = escapeHtml(row.place_id || "");
+        const processed = Boolean(String(row.processed_at || "").trim());
+        const updatedAt = formatUpdatedAt(row.updated_at);
         return `
           <article class="place-result-card" data-place-id="${placeId}" tabindex="0" role="link">
             <div class="place-result-score" aria-label="Puntuación máxima de humor">
@@ -115,8 +125,9 @@
                 <h4>${name}</h4>
                 <span>${Number(row.review_count || 0)} reseñas</span>
               </div>
-              <p>${category} · ${address}</p>
+              <p>${category} · ${address}${updatedAt ? ` · Actualizado ${escapeHtml(updatedAt)}` : ""}</p>
               <div class="place-result-counts" aria-label="Estados de las reseñas">
+                <span class="${processed ? "is-processed" : "is-pending"}">${processed ? "Procesado" : "Pendiente de procesar"}</span>
                 <span class="is-pending">${Number(row.pending_count || 0)} vacías</span>
                 <span class="is-accepted">${Number(row.accepted_count || 0)} aceptadas</span>
                 <span class="is-rejected">${Number(row.rejected_count || 0)} rechazadas</span>
@@ -128,7 +139,7 @@
     }
 
     async function loadDb() {
-      const res = await fetch(`/api/db-data?sort=${encodeURIComponent(reviewSort.value)}&status=${encodeURIComponent(statusFilter.value)}`);
+      const res = await fetch(`/api/db-data?sort=${encodeURIComponent(placeSort.value)}&processed=${encodeURIComponent(processedFilter.value)}`);
       if (!res.ok) {
         byId("db-summary").innerHTML = "<div class='hint'>No se pudo cargar la base de datos.</div>";
         return;
@@ -141,6 +152,8 @@
         `<div class=\"db-summary-card\"><div class=\"label\">Vacías</div><div class=\"value\">${summary.pending || 0}</div></div>`,
         `<div class=\"db-summary-card\"><div class=\"label\">Aceptadas</div><div class=\"value\">${summary.accepted || 0}</div></div>`,
         `<div class=\"db-summary-card\"><div class=\"label\">Rechazadas</div><div class=\"value\">${summary.rejected || 0}</div></div>`,
+        `<div class=\"db-summary-card\"><div class=\"label\">Sitios pendientes</div><div class=\"value\">${summary.unprocessed_places || 0}</div></div>`,
+        `<div class=\"db-summary-card\"><div class=\"label\">Sitios procesados</div><div class=\"value\">${summary.processed_places || 0}</div></div>`,
         `<div class=\"db-summary-card\"><div class=\"label\">Reseñas vacías (última)</div><div class=\"value\">${summary.empty_reviews_skipped_last || 0}</div></div>`,
         `<div class=\"db-summary-card\"><div class=\"label\">Reseñas vacías (total)</div><div class=\"value\">${summary.empty_reviews_skipped_total || 0}</div></div>`,
       ].join("");
@@ -161,11 +174,11 @@
     }
 
     byId("db-refresh").addEventListener("click", loadDb);
-    reviewSort.addEventListener("change", () => {
+    placeSort.addEventListener("change", () => {
       persistFilterState();
       loadDb();
     });
-    statusFilter.addEventListener("change", () => {
+    processedFilter.addEventListener("change", () => {
       persistFilterState();
       loadDb();
     });

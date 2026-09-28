@@ -98,12 +98,35 @@ class PlaceWorkflowTests(unittest.TestCase):
         self.assertEqual(first["rejected_count"], 1)
         self.assertEqual(first["pending_count"], 1)
 
-    def test_status_filter_selects_places_without_hiding_their_other_reviews(self) -> None:
-        accepted = config_ui._fetch_db_snapshot("humor_score", "accepted")
+    def test_processed_filter_separates_finished_sites(self) -> None:
+        self.assertTrue(config_ui._set_place_processed("place-1", True))
 
-        self.assertEqual(len(accepted["places"]), 1)
-        self.assertEqual(accepted["places"][0]["place_name"], "Sitio Uno")
-        self.assertEqual(accepted["places"][0]["review_count"], 3)
+        unprocessed = config_ui._fetch_db_snapshot("humor_score", "unprocessed")
+        processed = config_ui._fetch_db_snapshot("humor_score", "processed")
+
+        self.assertEqual([place["place_name"] for place in unprocessed["places"]], ["Sitio Dos"])
+        self.assertEqual([place["place_name"] for place in processed["places"]], ["Sitio Uno"])
+        self.assertTrue(processed["places"][0]["processed_at"])
+        self.assertEqual(processed["places"][0]["review_count"], 3)
+
+    def test_places_can_be_reopened(self) -> None:
+        self.assertTrue(config_ui._set_place_processed("data-1", True))
+        self.assertTrue(config_ui._set_place_processed("place-1", False))
+
+        detail = config_ui._fetch_place_detail("place-1")
+
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertFalse(detail["place"]["processed"])
+
+    def test_date_sort_uses_latest_review_in_each_site(self) -> None:
+        with sqlite3.connect(self.data_dir / "humor_reviews.db") as conn:
+            conn.execute("UPDATE reviews SET updated_at='2024-01-01T00:00:00' WHERE place_id IN ('place-1', 'data-1')")
+            conn.execute("UPDATE reviews SET updated_at='2025-01-01T00:00:00' WHERE review_id='other'")
+
+        snapshot = config_ui._fetch_db_snapshot("updated_at", "all")
+
+        self.assertEqual([place["place_name"] for place in snapshot["places"]], ["Sitio Dos", "Sitio Uno"])
 
     def test_place_detail_is_sorted_and_contains_all_review_states(self) -> None:
         detail = config_ui._fetch_place_detail("place-1")

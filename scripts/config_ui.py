@@ -231,6 +231,8 @@ def _ensure_place_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE places ADD COLUMN notion_page_url TEXT")
     if "notion_exported_at" not in columns:
         conn.execute("ALTER TABLE places ADD COLUMN notion_exported_at TEXT")
+    if "processed_at" not in columns:
+        conn.execute("ALTER TABLE places ADD COLUMN processed_at TEXT")
 
 
 def _migrate_legacy_review_status(conn: sqlite3.Connection, columns: set[str] | None = None) -> None:
@@ -285,20 +287,16 @@ def _status_filter_sql(status_filter: str) -> tuple[str, tuple]:
     return "WHERE LOWER(COALESCE(r.status, '')) IN ('', 'new')", ()
 
 
-def _place_status_having(status_filter: str) -> str:
-    normalized = str(status_filter or "pending").strip().lower()
-    if normalized == "accepted":
-        values = "'accepted', 'aceptada', 'selected', 'used'"
-    elif normalized == "rejected":
-        values = "'rejected', 'rechazada', 'discarded'"
-    elif normalized == "all":
+def _place_processed_where(processed_filter: str) -> str:
+    normalized = str(processed_filter or "unprocessed").strip().lower()
+    if normalized == "processed":
+        return "WHERE COALESCE(p.processed_at, '') <> ''"
+    if normalized == "all":
         return ""
-    else:
-        values = "'', 'new'"
-    return f"HAVING SUM(CASE WHEN LOWER(COALESCE(r.status, '')) IN ({values}) THEN 1 ELSE 0 END) > 0"
+    return "WHERE COALESCE(p.processed_at, '') = ''"
 
 
-def _fetch_db_snapshot(sort_by: str, status_filter: str) -> Dict[str, Any]:
+def _fetch_db_snapshot(sort_by: str, processed_filter: str) -> Dict[str, Any]:
     db_path = _db_path()
     if not db_path.exists():
         return {
@@ -344,6 +342,8 @@ def _fetch_db_snapshot(sort_by: str, status_filter: str) -> Dict[str, Any]:
         "pending": _scalar("SELECT COUNT(*) as count FROM reviews WHERE LOWER(COALESCE(status, '')) IN ('', 'new')"),
         "accepted": _scalar("SELECT COUNT(*) as count FROM reviews WHERE LOWER(COALESCE(status, '')) IN ('accepted', 'aceptada', 'selected', 'used')"),
         "rejected": _scalar("SELECT COUNT(*) as count FROM reviews WHERE LOWER(COALESCE(status, '')) IN ('rejected', 'rechazada', 'discarded')"),
+        "processed_places": _scalar("SELECT COUNT(*) as count FROM places WHERE COALESCE(processed_at, '') <> ''"),
+        "unprocessed_places": _scalar("SELECT COUNT(*) as count FROM places WHERE COALESCE(processed_at, '') = ''"),
     }
     summary["empty_reviews_skipped_total"] = _scalar(
         "SELECT COALESCE(SUM(count), 0) as count FROM ingest_stats WHERE event = 'empty_reviews_skipped'"
@@ -351,10 +351,10 @@ def _fetch_db_snapshot(sort_by: str, status_filter: str) -> Dict[str, Any]:
     summary["empty_reviews_skipped_last"] = _scalar(
         "SELECT count as count FROM ingest_stats WHERE event = 'empty_reviews_skipped' ORDER BY created_at DESC LIMIT 1"
     )
-    order_by = "updated_at DESC"
+    order_by = "last_review_updated_at DESC, top_humor_score DESC"
     if sort_by == "humor_score":
-        order_by = "top_humor_score DESC, updated_at DESC"
-    status_having = _place_status_having(status_filter)
+        order_by = "top_humor_score DESC, last_review_updated_at DESC"
+    processed_where = _place_processed_where(processed_filter)
 
     places = _rows(
         "SELECT "
@@ -364,16 +364,18 @@ def _fetch_db_snapshot(sort_by: str, status_filter: str) -> Dict[str, Any]:
         "COALESCE(p.category, '') AS place_category, "
         "COALESCE(p.place_url, '') AS place_url, "
         "COALESCE(p.notion_page_url, '') AS notion_page_url, "
+        "COALESCE(p.processed_at, '') AS processed_at, "
         "COUNT(r.review_id) AS review_count, "
         "MAX(COALESCE(r.humor_score, 0)) AS top_humor_score, "
         "SUM(CASE WHEN LOWER(COALESCE(r.status, '')) IN ('', 'new') THEN 1 ELSE 0 END) AS pending_count, "
         "SUM(CASE WHEN LOWER(COALESCE(r.status, '')) IN ('accepted', 'aceptada', 'selected', 'used') THEN 1 ELSE 0 END) AS accepted_count, "
         "SUM(CASE WHEN LOWER(COALESCE(r.status, '')) IN ('rejected', 'rechazada', 'discarded') THEN 1 ELSE 0 END) AS rejected_count, "
-        "MAX(r.updated_at) AS updated_at "
+        "MAX(r.updated_at) AS updated_at, "
+        "MAX(r.updated_at) AS last_review_updated_at "
         "FROM reviews r "
         "LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id) "
-        "GROUP BY COALESCE(p.place_id, r.place_id), p.name, p.address, p.category, p.place_url, p.notion_page_url "
-        f"{status_having} "
+        f"{processed_where} "
+        "GROUP BY COALESCE(p.place_id, r.place_id), p.name, p.address, p.category, p.place_url, p.notion_page_url, p.processed_at "
         f"ORDER BY {order_by} LIMIT 200"
     )
     shortlist = _rows(
@@ -454,7 +456,7 @@ def _fetch_place_detail(place_id: str) -> Dict[str, Any] | None:
         place_row = conn.execute(
             """
             SELECT place_id, data_id, name, address, category, place_url,
-                   notion_page_id, notion_page_url, notion_exported_at
+                   notion_page_id, notion_page_url, notion_exported_at, processed_at
             FROM places
             WHERE place_id = ? OR data_id = ?
             LIMIT 1
@@ -535,6 +537,8 @@ def _fetch_place_detail(place_id: str) -> Dict[str, Any] | None:
         "notion_page_id": str((place_row["notion_page_id"] if place_row else "") or ""),
         "notion_page_url": str((place_row["notion_page_url"] if place_row else "") or ""),
         "notion_exported_at": str((place_row["notion_exported_at"] if place_row else "") or ""),
+        "processed_at": str((place_row["processed_at"] if place_row else "") or ""),
+        "processed": bool((place_row["processed_at"] if place_row else "") or ""),
         "review_count": len(reviews),
         "accepted_count": sum(review["status"] == "accepted" for review in reviews),
         "rejected_count": sum(review["status"] == "rejected" for review in reviews),
@@ -784,6 +788,20 @@ def _set_review_status(review_id: str, status: str) -> bool:
         cur = conn.execute(
             "UPDATE reviews SET status=?, updated_at=? WHERE review_id=?",
             (status, now, review_id),
+        )
+        return cur.rowcount > 0
+
+
+def _set_place_processed(place_id: str, processed: bool) -> bool:
+    db_path = _db_path()
+    if not db_path.exists():
+        return False
+    with sqlite3.connect(db_path) as conn:
+        _ensure_place_columns(conn)
+        processed_at = datetime.utcnow().isoformat() if processed else None
+        cur = conn.execute(
+            "UPDATE places SET processed_at=? WHERE place_id=? OR data_id=?",
+            (processed_at, place_id, place_id),
         )
         return cur.rowcount > 0
 
@@ -1940,16 +1958,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/db-data"):
             query = self.path.split("?", 1)[1] if "?" in self.path else ""
             sort_by = "updated_at"
-            status_filter = "pending"
+            processed_filter = "unprocessed"
             for part in query.split("&"):
                 if not part:
                     continue
                 key, _, value = part.partition("=")
                 if key == "sort":
                     sort_by = value
-                if key == "status":
-                    status_filter = value or "pending"
-            payload = _fetch_db_snapshot(sort_by, status_filter)
+                if key in {"processed", "status"}:
+                    processed_filter = value or "unprocessed"
+            payload = _fetch_db_snapshot(sort_by, processed_filter)
             self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
             return
         if self.path.startswith("/api/place-detail"):
@@ -2119,6 +2137,29 @@ class Handler(BaseHTTPRequestHandler):
             self._send(
                 200,
                 json.dumps({"ok": True, "status": status, "message": "Estado actualizado."}).encode("utf-8"),
+                "application/json",
+            )
+            return
+        if self.path == "/api/place-processed":
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            place_id = str(payload.get("place_id") or "").strip()
+            processed = payload.get("processed") is True
+            if not place_id:
+                self._send(400, b"missing place_id", "text/plain")
+                return
+            if not _set_place_processed(place_id, processed):
+                self._send(404, b"place not found", "text/plain")
+                return
+            self._send(
+                200,
+                json.dumps(
+                    {
+                        "ok": True,
+                        "processed": processed,
+                        "message": "Sitio marcado como procesado." if processed else "Sitio reabierto.",
+                    }
+                ).encode("utf-8"),
                 "application/json",
             )
             return

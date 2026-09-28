@@ -39,6 +39,7 @@
     const feedback = document.getElementById("place-feedback");
     let detail = null;
     let exporting = false;
+    let updatingProcessed = false;
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>'"]/g, (char) => ({
@@ -88,6 +89,7 @@
             <span class="is-accepted">${accepted} aceptadas</span>
             <span class="is-rejected">${Number(place.rejected_count || 0)} rechazadas</span>
             <span class="is-pending">${Number(place.pending_count || 0)} vacías</span>
+            <span class="${place.processed ? "is-processed" : "is-pending"}">${place.processed ? "Procesado" : "Pendiente de procesar"}</span>
           </div>
           <div class="place-detail-actions">
             ${placeUrl ? `<a class="place-link-button" href="${placeUrl}" target="_blank" rel="noopener noreferrer">Ver sitio</a>` : ""}
@@ -95,9 +97,13 @@
             <button id="export-notion" ${accepted === 0 || exporting ? "disabled" : ""}>
               ${exporting ? "Exportando…" : notionUrl ? "Actualizar en Notion" : "Exportar a Notion"}
             </button>
+            <button class="place-processed-button ${place.processed ? "is-reopen" : ""}" id="toggle-place-processed" ${updatingProcessed ? "disabled" : ""}>
+              ${updatingProcessed ? "Guardando…" : place.processed ? "Reabrir sitio" : "Marcar procesado"}
+            </button>
           </div>
         </div>`;
       document.getElementById("export-notion")?.addEventListener("click", exportToNotion);
+      document.getElementById("toggle-place-processed")?.addEventListener("click", togglePlaceProcessed);
     }
 
     function renderReview(review, index) {
@@ -180,6 +186,35 @@
       } catch (error) {
         feedback.textContent = error.message || "No se pudo guardar el estado.";
         renderReviews();
+      }
+    }
+
+    async function togglePlaceProcessed() {
+      if (updatingProcessed) return;
+      const nextProcessed = !detail.place.processed;
+      updatingProcessed = true;
+      feedback.textContent = nextProcessed ? "Marcando el sitio como procesado…" : "Reabriendo el sitio…";
+      renderHeader();
+      try {
+        const response = await fetch("/api/place-processed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ place_id: detail.place.place_id, processed: nextProcessed }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.message || "No se pudo actualizar el sitio.");
+        detail.place.processed = nextProcessed;
+        detail.place.processed_at = nextProcessed ? new Date().toISOString() : "";
+        if (nextProcessed) {
+          window.location.assign("/db");
+          return;
+        }
+        feedback.textContent = payload.message || "Sitio reabierto.";
+      } catch (error) {
+        feedback.textContent = error.message || "No se pudo actualizar el sitio.";
+      } finally {
+        updatingProcessed = false;
+        renderHeader();
       }
     }
 
