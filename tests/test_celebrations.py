@@ -226,6 +226,18 @@ class CelebrationRelevanceTests(unittest.TestCase):
 
         self.assertGreaterEqual(result.score, 60)
 
+    def test_local_relevance_does_not_match_alien_with_allan_herndon_dudley(self) -> None:
+        result = score_celebration_relevance_local(
+            "Fuimos a buscar aliens y no vimos ninguno.",
+            "",
+            "Area 51",
+            "tourist attraction",
+            ["Día Mundial del Síndrome de Allan-Herndon-Dudley o Deficiencia de #MCT8"],
+        )
+
+        self.assertEqual(result.score, 0)
+        self.assertEqual(result.observance, "")
+
 
 class CelebrationStrategyTests(unittest.TestCase):
     @patch("humor_reviews.celebration_strategy.OpenAI")
@@ -239,6 +251,26 @@ class CelebrationStrategyTests(unittest.TestCase):
         self.assertEqual(len(strategy.selected_observances), 3)
         self.assertIn("restaurante de pulpo", [item.query for item in strategy.searches])
         self.assertIn("planetario", [item.query for item in strategy.searches])
+
+    @patch("humor_reviews.celebration_strategy.OpenAI")
+    def test_local_strategy_discards_unsuitable_medical_observances(self, openai: Mock) -> None:
+        syndrome = (
+            "Día Mundial del Síndrome de Allan-Herndon-Dudley o Deficiencia de #MCT8"
+        )
+        strategy = build_celebration_strategy_from_text(
+            f"{syndrome}\nSemana Mundial del Espacio",
+            _settings("typesafe"),
+        )
+
+        openai.assert_not_called()
+        self.assertEqual(strategy.selected_observances, ["Semana Mundial del Espacio"])
+        self.assertEqual(strategy.discarded_observances, [syndrome])
+        self.assertFalse(
+            any(
+                "allan" in item.query.casefold() or "mct8" in item.query.casefold()
+                for item in strategy.searches
+            )
+        )
 
     @patch("humor_reviews.celebration_strategy.OpenAI")
     def test_openai_quota_error_has_actionable_message(self, openai: Mock) -> None:

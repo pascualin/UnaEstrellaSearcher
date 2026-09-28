@@ -40,16 +40,31 @@ LOCAL_QUERY_RULES = [
     (("musica",), ("sala de conciertos", "tienda de música")),
     (("turismo", "viaje"), ("atracción turística", "visita guiada")),
 ]
+UNSUITABLE_TOPIC_MARKERS = ("sindrome", "deficiencia")
 
 
 def build_celebration_strategy(
     observances: list[dict[str, str]],
     settings: ScoringSettings,
 ) -> CelebrationStrategy:
-    payload = observances
+    searchable_observances, prediscarded_observances = _partition_searchable_observances(
+        observances
+    )
+    payload = searchable_observances
 
     if (settings.provider or "").strip().lower() not in {"openai"}:
-        return _build_local_strategy(observances, "Planificación local para el proveedor elegido.")
+        return _build_local_strategy(
+            searchable_observances,
+            "Planificación local para el proveedor elegido.",
+            prediscarded_observances,
+        )
+
+    if not searchable_observances:
+        return _build_local_strategy(
+            [],
+            "No hay celebraciones adecuadas para buscar lugares.",
+            prediscarded_observances,
+        )
 
     try:
         api_key, model = openai_planning_config(settings)
@@ -143,8 +158,9 @@ def build_celebration_strategy(
                 "con TYPESAFE_API_KEY para puntuar las reseñas."
             ) from exc
         return _build_local_strategy(
-            observances,
+            searchable_observances,
             f"Planificación local porque OpenAI no estaba disponible ({exc.__class__.__name__}).",
+            prediscarded_observances,
         )
 
     searches = [
@@ -158,7 +174,16 @@ def build_celebration_strategy(
     ]
     return CelebrationStrategy(
         selected_observances=[str(item).strip() for item in data.get("selected_observances", []) if str(item).strip()],
-        discarded_observances=[str(item).strip() for item in data.get("discarded_observances", []) if str(item).strip()],
+        discarded_observances=list(
+            dict.fromkeys(
+                prediscarded_observances
+                + [
+                    str(item).strip()
+                    for item in data.get("discarded_observances", [])
+                    if str(item).strip()
+                ]
+            )
+        ),
         notes=str(data.get("notes") or "").strip(),
         searches=searches,
     )
@@ -167,6 +192,7 @@ def build_celebration_strategy(
 def _build_local_strategy(
     observances: list[dict[str, str]],
     notes: str,
+    discarded_observances: list[str] | None = None,
 ) -> CelebrationStrategy:
     names = list(
         dict.fromkeys(
@@ -205,10 +231,33 @@ def _build_local_strategy(
             break
     return CelebrationStrategy(
         selected_observances=names,
-        discarded_observances=[],
+        discarded_observances=list(discarded_observances or []),
         notes=notes,
         searches=searches,
     )
+
+
+def _partition_searchable_observances(
+    observances: list[dict[str, str]],
+) -> tuple[list[dict[str, str]], list[str]]:
+    searchable: list[dict[str, str]] = []
+    discarded: list[str] = []
+    for observance in observances:
+        name = str(observance.get("name") or "").strip()
+        normalized_topic = _normalize(_observance_topic(name))
+        has_query_rule = any(
+            keyword in normalized_topic
+            for keywords, _queries in LOCAL_QUERY_RULES
+            for keyword in keywords
+        )
+        if not has_query_rule and any(
+            marker in normalized_topic for marker in UNSUITABLE_TOPIC_MARKERS
+        ):
+            if name:
+                discarded.append(name)
+            continue
+        searchable.append(observance)
+    return searchable, list(dict.fromkeys(discarded))
 
 
 def _observance_topic(name: str) -> str:
