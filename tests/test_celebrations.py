@@ -34,6 +34,30 @@ HTML = """
 </body></html>
 """
 
+MODERN_HTML = """
+<html><body>
+  <div style="display:none">
+    <h2>8 de septiembre</h2>
+    <h3><a href="/ficha/dia-internacional-alfabetizacion">Día Internacional de la Alfabetización</a></h3>
+  </div>
+  <h1>El 8 de octubre se celebra</h1>
+  <section>
+    <h2 id="dias-internacionales">Días Internacionales y Mundiales</h2>
+    <article><h3><a href="/ficha/dia-internacional-pulpo">Día Internacional del Pulpo</a></h3></article>
+    <article><h3><a href="/ficha/dia-internacional-dislexia">Día Internacional de la Dislexia</a></h3></article>
+  </section>
+  <section>
+    <h2 id="semanas-internacionales">Semanas Internacionales y Mundiales</h2>
+    <article><h3><a href="/semanas-internacionales/semana-mundial-espacio">Semana Mundial del Espacio</a></h3></article>
+    <h3><a href="/semanas-internacionales/calendario/octubre">Semanas de octubre</a></h3>
+  </section>
+  <section>
+    <h2 id="efemerides">Efemérides</h2>
+    <article><h3>Un acontecimiento que no es una celebración</h3></article>
+  </section>
+</body></html>
+"""
+
 
 def _settings() -> ScoringSettings:
     return ScoringSettings(
@@ -67,6 +91,22 @@ class CelebrationCalendarTests(unittest.TestCase):
             "https://www.diainternacionalde.com/dias/dia-internacional-del-chocolate",
         )
 
+    def test_parser_supports_current_daily_page_without_collecting_other_sections(self) -> None:
+        observances = parse_observances_html(
+            MODERN_HTML,
+            date(2026, 10, 8),
+            "https://www.diainternacionalde.com/calendario/octubre/8",
+        )
+
+        self.assertEqual(
+            [item.name for item in observances],
+            [
+                "Día Internacional del Pulpo",
+                "Día Internacional de la Dislexia",
+                "Semana Mundial del Espacio",
+            ],
+        )
+
     @patch("humor_reviews.celebration_calendar.requests.get")
     def test_calendar_response_is_cached_by_episode_date(self, get: Mock) -> None:
         response = Mock(text=HTML)
@@ -80,6 +120,20 @@ class CelebrationCalendarTests(unittest.TestCase):
 
         self.assertEqual(first, second)
         get.assert_called_once()
+
+    @patch("humor_reviews.celebration_calendar.requests.get")
+    def test_calendar_falls_back_to_month_page(self, get: Mock) -> None:
+        missing_day = Mock(text="<html><h1>Contenido incompleto</h1></html>")
+        missing_day.raise_for_status.return_value = None
+        month_page = Mock(text=HTML)
+        month_page.raise_for_status.return_value = None
+        get.side_effect = [missing_day, month_page]
+
+        with tempfile.TemporaryDirectory() as directory:
+            observances = fetch_observances(date(2026, 9, 13), Path(directory))
+
+        self.assertEqual(len(observances), 2)
+        self.assertEqual(get.call_count, 2)
 
 
 class CelebrationRelevanceTests(unittest.TestCase):
