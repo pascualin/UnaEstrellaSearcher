@@ -325,7 +325,7 @@ Cuando exportas un sitio desde la UI:
 
 ### Mapeo actual a Notion
 
-- `Título` -> `Nombre del sitio - reseñas seleccionadas`
+- `Título` -> nombre del sitio, localidad/provincia/país, puntuación media y número de reseñas seleccionadas
 - `URL` -> URL de la reseña
 - `Type` -> `Review`
 - `Scope` -> `personal`

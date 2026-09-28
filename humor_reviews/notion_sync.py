@@ -7,6 +7,8 @@ from typing import Any
 
 import requests
 
+from .place_metadata import format_place_location
+
 
 NOTION_API_BASE = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
@@ -241,9 +243,8 @@ def _build_place_properties(
     schema: dict[str, Any],
 ) -> dict[str, Any]:
     properties = _build_properties(reviews[0], title_property, schema)
-    place_name = str(place.get("place_name") or "Sitio").strip() or "Sitio"
     properties[title_property] = {
-        "title": [{"text": {"content": f"{place_name} - reseñas seleccionadas"[:180]}}]
+        "title": [{"text": {"content": _place_page_title(place, reviews)}}]
     }
     place_url = str(place.get("place_url") or reviews[0].get("review_url") or "").strip()
     if _has_property(schema, "URL", "url") and place_url:
@@ -254,6 +255,27 @@ def _build_place_properties(
             "multi_select": ([{"name": "Respuesta del propietario"}] if has_owner_reply else [])
         }
     return properties
+
+
+def _place_page_title(place: dict[str, Any], reviews: list[dict[str, Any]]) -> str:
+    place_name = str(place.get("place_name") or "Sitio").strip() or "Sitio"
+    location = format_place_location(
+        str(place.get("place_address") or ""),
+        str(place.get("place_country") or ""),
+    )
+    try:
+        rating = float(place.get("average_rating"))
+    except (TypeError, ValueError):
+        rating = 0.0
+    rating_label = f"{rating:.1f}".replace(".", ",") + "/5" if rating > 0 else "Sin puntuación"
+    review_count = len(reviews)
+    count_label = (
+        "1 reseña seleccionada"
+        if review_count == 1
+        else f"{review_count} reseñas seleccionadas"
+    )
+    suffix = f" · {location} · {rating_label} · {count_label}"
+    return f"{place_name[:max(1, 180 - len(suffix))]}{suffix}"[:180]
 
 
 def _build_children(review: dict[str, Any]) -> list[dict[str, Any]]:

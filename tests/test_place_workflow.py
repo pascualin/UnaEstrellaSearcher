@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from humor_reviews.notion_sync import NotionPage, _build_place_children
+from humor_reviews.notion_sync import NotionPage, _build_place_children, _place_page_title
 from humor_reviews.storage import Place, Review, Storage
 from humor_reviews.translation import TranslationResult
 from scripts import config_ui
@@ -59,6 +59,8 @@ class PlaceWorkflowTests(unittest.TestCase):
                 last_review_date=None,
                 provider="test",
                 place_url="https://example.com/place-1",
+                average_rating=4.6,
+                country="España",
             )
         )
         self.storage.upsert_place(
@@ -72,6 +74,8 @@ class PlaceWorkflowTests(unittest.TestCase):
                 last_review_date=None,
                 provider="test",
                 place_url="https://example.com/place-2",
+                average_rating=4.2,
+                country="España",
             )
         )
         self.storage.upsert_review(_review("low", "place-1", 22))
@@ -179,6 +183,9 @@ class PlaceWorkflowTests(unittest.TestCase):
         self.assertEqual(result["exported_reviews"], 1)
         exported_reviews = sync_page.call_args.args[1]
         self.assertEqual([review["review_id"] for review in exported_reviews], ["top"])
+        exported_place = sync_page.call_args.args[0]
+        self.assertEqual(exported_place["average_rating"], 4.6)
+        self.assertEqual(exported_place["place_country"], "España")
         self.assertEqual(sync_page.call_args.kwargs["review_images"], {"top": PNG_BYTES})
         with sqlite3.connect(self.data_dir / "humor_reviews.db") as conn:
             place_url = conn.execute("SELECT notion_page_url FROM places WHERE place_id='place-1'").fetchone()[0]
@@ -207,6 +214,37 @@ class PlaceWorkflowTests(unittest.TestCase):
 
 
 class NotionPlaceDocumentTests(unittest.TestCase):
+    def test_title_contains_place_location_rating_and_selected_count(self) -> None:
+        title = _place_page_title(
+            {
+                "place_name": "Rosi La Loca",
+                "place_address": "C. de Cádiz, 4, Centro, 28012 Madrid",
+                "place_country": "España",
+                "average_rating": 4.7,
+            },
+            [{"review_id": "first"}, {"review_id": "second"}],
+        )
+
+        self.assertEqual(
+            title,
+            "Rosi La Loca · Madrid, Madrid, España · 4,7/5 · 2 reseñas seleccionadas",
+        )
+
+    def test_title_uses_singular_for_one_selected_review(self) -> None:
+        title = _place_page_title(
+            {
+                "place_name": "El Social",
+                "place_address": "Madrid, Spain",
+                "average_rating": 4.8,
+            },
+            [{"review_id": "only"}],
+        )
+
+        self.assertEqual(
+            title,
+            "El Social · Madrid, Madrid, España · 4,8/5 · 1 reseña seleccionada",
+        )
+
     def test_reviews_are_rendered_in_order_with_dividers(self) -> None:
         reviews = [
             {"reviewer_name": "Primera", "review_text": "Uno", "humor_score": 90},

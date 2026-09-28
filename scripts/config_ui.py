@@ -25,6 +25,7 @@ from humor_reviews.collect import _serpapi_reviews
 from humor_reviews.humor import score_review
 from humor_reviews.notion_sync import NotionSyncError, append_review_image, sync_place_reviews_page
 from humor_reviews.openai_models import openai_model_catalog
+from humor_reviews.place_metadata import country_name, place_location
 from humor_reviews.safety import assess_safety
 from humor_reviews.settings import load_settings
 from humor_reviews.storage import Place, Review, Storage
@@ -65,6 +66,7 @@ NOTION_CAPTURE_MAX_FILES = 50
 NOTION_CAPTURE_TOTAL_MAX_BYTES = 64 * 1024 * 1024
 OPENAI_MODEL_CACHE_TTL_SECONDS = 300
 _openai_model_cache: dict[str, Any] = {"key": "", "expires_at": 0.0, "payload": None}
+_place_metadata_lookups: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
 
 
 def _load_env(path: Path) -> None:
@@ -225,6 +227,10 @@ def _ensure_review_columns(conn: sqlite3.Connection) -> None:
 
 def _ensure_place_columns(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(places)").fetchall()}
+    if "average_rating" not in columns:
+        conn.execute("ALTER TABLE places ADD COLUMN average_rating REAL")
+    if "country" not in columns:
+        conn.execute("ALTER TABLE places ADD COLUMN country TEXT")
     if "notion_page_id" not in columns:
         conn.execute("ALTER TABLE places ADD COLUMN notion_page_id TEXT")
     if "notion_page_url" not in columns:
@@ -233,6 +239,82 @@ def _ensure_place_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE places ADD COLUMN notion_exported_at TEXT")
     if "processed_at" not in columns:
         conn.execute("ALTER TABLE places ADD COLUMN processed_at TEXT")
+
+
+def _cached_place_metadata(place_ids: list[str]) -> dict[str, Any]:
+    settings = load_settings(CONFIG_PATH)
+    cache_dir = settings.app.data_dir / "api_cache"
+    cache_key = str(cache_dir.resolve())
+    identifiers = tuple(sorted({place_id for place_id in place_ids if place_id}))
+    lookup_key = (cache_key, identifiers)
+    if lookup_key in _place_metadata_lookups:
+        return _place_metadata_lookups[lookup_key]
+
+    identifier_set = set(identifiers)
+    for path in (cache_dir / "discover").glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, list):
+            continue
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            item_ids = {str(item.get("place_id") or ""), str(item.get("data_id") or "")}
+            if identifier_set.intersection(item_ids):
+                _place_metadata_lookups[lookup_key] = item
+                return item
+
+    if any(identifier.startswith("0x") for identifier in identifiers):
+        for path in (cache_dir / "reviews").glob("*.json"):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            data_id = str((payload.get("search_parameters") or {}).get("data_id") or "")
+            place_info = payload.get("place_info") or {}
+            if data_id in identifier_set and isinstance(place_info, dict):
+                _place_metadata_lookups[lookup_key] = place_info
+                return place_info
+
+    _place_metadata_lookups[lookup_key] = {}
+    return {}
+
+
+def _hydrate_place_metadata(conn: sqlite3.Connection, place_row: sqlite3.Row) -> sqlite3.Row:
+    if place_row["average_rating"] is not None and str(place_row["country"] or "").strip():
+        return place_row
+    identifiers = [str(place_row[key] or "") for key in ("place_id", "data_id")]
+    metadata = _cached_place_metadata(identifiers)
+    address = str(metadata.get("address") or place_row["address"] or "").strip()
+    try:
+        average_rating = float(metadata.get("rating"))
+    except (TypeError, ValueError):
+        average_rating = None
+    fallback_country = country_name(load_settings(CONFIG_PATH).discovery.country)
+    country = place_location(address, fallback_country)[2]
+    conn.execute(
+        """
+        UPDATE places
+        SET address = CASE WHEN ? <> '' THEN ? ELSE address END,
+            average_rating = COALESCE(?, average_rating),
+            country = CASE WHEN ? <> '' THEN ? ELSE country END
+        WHERE place_id = ?
+        """,
+        (address, address, average_rating, country, country, place_row["place_id"]),
+    )
+    return conn.execute(
+        """
+        SELECT place_id, data_id, name, address, category, place_url,
+               average_rating, country, notion_page_id, notion_page_url,
+               notion_exported_at, processed_at
+        FROM places WHERE place_id = ?
+        """,
+        (place_row["place_id"],),
+    ).fetchone()
 
 
 def _migrate_legacy_review_status(conn: sqlite3.Connection, columns: set[str] | None = None) -> None:
@@ -456,13 +538,16 @@ def _fetch_place_detail(place_id: str) -> Dict[str, Any] | None:
         place_row = conn.execute(
             """
             SELECT place_id, data_id, name, address, category, place_url,
-                   notion_page_id, notion_page_url, notion_exported_at, processed_at
+                   average_rating, country, notion_page_id, notion_page_url,
+                   notion_exported_at, processed_at
             FROM places
             WHERE place_id = ? OR data_id = ?
             LIMIT 1
             """,
             (place_id, place_id),
         ).fetchone()
+        if place_row:
+            place_row = _hydrate_place_metadata(conn, place_row)
         review_place_ids = [place_id]
         if place_row:
             review_place_ids = [
@@ -532,6 +617,8 @@ def _fetch_place_detail(place_id: str) -> Dict[str, Any] | None:
         "place_id": str((place_row["place_id"] if place_row else place_id) or place_id),
         "place_name": str((place_row["name"] if place_row else "Sitio") or "Sitio"),
         "place_address": str((place_row["address"] if place_row else "") or ""),
+        "average_rating": float((place_row["average_rating"] if place_row else 0) or 0),
+        "place_country": str((place_row["country"] if place_row else "") or ""),
         "place_category": str((place_row["category"] if place_row else "") or ""),
         "place_url": str((place_row["place_url"] if place_row else first_review["review_url"]) or ""),
         "notion_page_id": str((place_row["notion_page_id"] if place_row else "") or ""),
@@ -1618,16 +1705,27 @@ def _upsert_place_from_reviews_payload(storage: Storage, place_data_id: str, pay
         total_reviews = int(total_reviews)
     except (TypeError, ValueError):
         total_reviews = 0
+    try:
+        average_rating = float(place_info.get("rating"))
+    except (TypeError, ValueError):
+        average_rating = None
+    address = str(place_info.get("address") or "").strip()
+    country = place_location(
+        address,
+        country_name(load_settings(CONFIG_PATH).discovery.country),
+    )[2]
     place = Place(
         place_id=place_data_id,
         data_id=place_data_id,
         name=str(place_info.get("title") or place_info.get("name") or "Importado manualmente").strip(),
-        address=str(place_info.get("address") or "").strip(),
+        address=address,
         category=str(place_info.get("type") or "manual").strip() or "manual",
         total_reviews=total_reviews,
         last_review_date=review.date,
         provider="serpapi",
         place_url=str(place_info.get("link") or search_metadata.get("google_maps_url") or "").strip(),
+        average_rating=average_rating,
+        country=country,
     )
     storage.upsert_place(place)
 
