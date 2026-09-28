@@ -136,7 +136,7 @@ scoring:
   api_key_env: TYPESAFE_API_KEY
 ```
 
-Jev usa el mismo texto de `prompt` como contexto de evaluación. Su respuesta `score` emplea once niveles ordenados (0–10), que el proyecto convierte a la escala 0–100. Jev también elige una etiqueta principal de humor. Como Jev devuelve decisiones estructuradas y no genera texto libre, deja vacío el resumen de la reseña y guarda la confianza del score en `humor_notes`.
+Jev usa el mismo texto de `prompt` como contexto de evaluación. Su respuesta `score` emplea once niveles ordenados (0–10), que el proyecto convierte a la escala 0–100. Jev también elige una etiqueta principal de humor y guarda la confianza del score en `humor_notes`. Ningún proveedor genera ya resúmenes de las reseñas.
 
 Puedes crear la clave y consultar los modelos disponibles en la [documentación oficial de TypeSafe](https://docs.typesafe.ai/) y en su endpoint `GET /v1/models`.
 
@@ -315,17 +315,17 @@ Copia la URL real de la reseña de Google Maps.
 
 ## Integración con Notion
 
-Cuando aceptas una reseña desde la UI:
+Cuando exportas un sitio desde la UI:
 
-- se crea una página en la base de datos configurada
+- se crea o actualiza una única página en la base de datos configurada
 - se rellena el icono de la página con `⭐`
 - se asignan propiedades del registro
-- se escribe el body
-- se sube la captura de la reseña al final del body
+- se escriben consecutivamente todas las reseñas aceptadas
+- se genera y sube una captura PNG detrás de cada reseña
 
 ### Mapeo actual a Notion
 
-- `Título` -> `Nombre del sitio - Nombre del reviewer`
+- `Título` -> nombre del sitio, localidad/provincia/país, puntuación media y número de reseñas seleccionadas
 - `URL` -> URL de la reseña
 - `Type` -> `Review`
 - `Scope` -> `personal`
@@ -341,7 +341,7 @@ Se usa el mismo formato que el botón `Copiar texto`:
 - si existe:
   - encabezado `Respuesta de propietario`
   - bloques de cita con la respuesta
-- imagen generada desde la captura de la reseña
+- captura PNG de cada reseña, colocada antes del separador de la siguiente
 
 ### Requisitos de Notion
 
@@ -410,6 +410,8 @@ PYTHONPATH=. .venv/bin/python scripts/test_score.py
 - `scripts/config_view.html`
   Vista de configuración.
 - `scripts/db_view.html`
-  Listado y resumen de reseñas.
+  Listado de sitios con filtros de procesado y orden por puntuación o actualización.
+- `scripts/place_detail.html`
+  Moderación de reseñas, exportación a Notion y cierre o reapertura del sitio.
 - `scripts/review_detail.html`
   Vista de detalle y acciones de moderación.

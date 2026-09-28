@@ -136,12 +136,13 @@ class OpenAIScoringTests(unittest.TestCase):
     def test_reasoning_request_uses_responses_api_without_temperature(self, openai: Mock) -> None:
         settings = _settings("openai")
         settings.model = "gpt-6-astra"
+        settings.prompt += '\n{"score": 0, "summary": "resumen corto"}'
         settings.reasoning_effort = "high"
         settings.reasoning_mode = "pro"
         settings.service_tier = "fast"
         response = Mock(
             status="completed",
-            output_text='{"score": 87, "notes": "Muy buena", "tags": ["absurdo"], "summary": "Caos."}',
+            output_text='{"score": 87, "notes": "Muy buena", "tags": ["absurdo"]}',
         )
         openai.return_value.responses.create.return_value = response
 
@@ -153,8 +154,13 @@ class OpenAIScoringTests(unittest.TestCase):
         self.assertEqual(request["reasoning"], {"effort": "high", "mode": "pro"})
         self.assertEqual(request["service_tier"], "fast")
         self.assertEqual(request["text"]["verbosity"], "low")
+        self.assertNotIn("summary", request["text"]["format"]["schema"]["properties"])
+        self.assertNotIn("summary", request["text"]["format"]["schema"]["required"])
+        self.assertIn("No generes ni incluyas ningún resumen", request["instructions"])
+        self.assertNotIn('"summary"', request["input"])
         self.assertNotIn("temperature", request)
         self.assertFalse(request["store"])
+        self.assertEqual(result.summary, "")
 
     @patch("humor_reviews.humor.OpenAI")
     def test_none_reasoning_keeps_temperature(self, openai: Mock) -> None:
@@ -162,7 +168,7 @@ class OpenAIScoringTests(unittest.TestCase):
         settings.model = "gpt-5.4"
         response = Mock(
             status="completed",
-            output_text='{"score": 42, "notes": "Ok", "tags": [], "summary": ""}',
+            output_text='{"score": 42, "notes": "Ok", "tags": []}',
         )
         openai.return_value.responses.create.return_value = response
 

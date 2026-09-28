@@ -18,6 +18,8 @@ class Place:
     last_review_date: Optional[str]
     provider: str
     place_url: Optional[str] = None
+    average_rating: Optional[float] = None
+    country: str = ""
 
 
 @dataclass
@@ -63,7 +65,13 @@ class Storage:
                     total_reviews INTEGER,
                     last_review_date TEXT,
                     provider TEXT,
-                    place_url TEXT
+                    place_url TEXT,
+                    average_rating REAL,
+                    country TEXT,
+                    notion_page_id TEXT,
+                    notion_page_url TEXT,
+                    notion_exported_at TEXT,
+                    processed_at TEXT
                 )
                 """
             )
@@ -136,6 +144,18 @@ class Storage:
             conn.execute("ALTER TABLE places ADD COLUMN data_id TEXT")
         if "place_url" not in columns:
             conn.execute("ALTER TABLE places ADD COLUMN place_url TEXT")
+        if "average_rating" not in columns:
+            conn.execute("ALTER TABLE places ADD COLUMN average_rating REAL")
+        if "country" not in columns:
+            conn.execute("ALTER TABLE places ADD COLUMN country TEXT")
+        if "notion_page_id" not in columns:
+            conn.execute("ALTER TABLE places ADD COLUMN notion_page_id TEXT")
+        if "notion_page_url" not in columns:
+            conn.execute("ALTER TABLE places ADD COLUMN notion_page_url TEXT")
+        if "notion_exported_at" not in columns:
+            conn.execute("ALTER TABLE places ADD COLUMN notion_exported_at TEXT")
+        if "processed_at" not in columns:
+            conn.execute("ALTER TABLE places ADD COLUMN processed_at TEXT")
 
     def _ensure_review_columns(self, conn: sqlite3.Connection) -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()}
@@ -187,9 +207,9 @@ class Storage:
                 """
                 INSERT INTO places (
                     place_id, data_id, name, address, category, total_reviews,
-                    last_review_date, provider, place_url
+                    last_review_date, provider, place_url, average_rating, country
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(place_id) DO UPDATE SET
                     data_id=excluded.data_id,
                     name=excluded.name,
@@ -198,7 +218,12 @@ class Storage:
                     total_reviews=excluded.total_reviews,
                     last_review_date=excluded.last_review_date,
                     provider=excluded.provider,
-                    place_url=excluded.place_url
+                    place_url=excluded.place_url,
+                    average_rating=COALESCE(excluded.average_rating, places.average_rating),
+                    country=CASE
+                        WHEN COALESCE(excluded.country, '') <> '' THEN excluded.country
+                        ELSE places.country
+                    END
                 """,
                 (
                     place.place_id,
@@ -210,6 +235,8 @@ class Storage:
                     place.last_review_date,
                     place.provider,
                     place.place_url,
+                    place.average_rating,
+                    place.country,
                 ),
             )
 
@@ -521,6 +548,8 @@ class Storage:
                     last_review_date=row["last_review_date"],
                     provider=row["provider"],
                     place_url=row["place_url"],
+                    average_rating=row["average_rating"],
+                    country=row["country"] or "",
                 )
                 for row in rows
             }

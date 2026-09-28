@@ -21,6 +21,51 @@ class TranslationResult:
     owner_reply_language: str
 
 
+def translate_reviews_to_spanish(
+    reviews: list[dict[str, str]],
+) -> dict[str, TranslationResult]:
+    normalized: list[dict[str, str]] = []
+    for review in reviews:
+        review_id = str(review.get("review_id") or "").strip()
+        if not review_id:
+            continue
+        normalized.append(
+            {
+                "review_id": review_id,
+                "review_text": str(review.get("review_text") or "").strip(),
+                "owner_reply_text": str(review.get("owner_reply_text") or "").strip(),
+            }
+        )
+    if not normalized:
+        return {}
+
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return {item["review_id"]: _fallback_translation(item) for item in normalized}
+
+    model = _translation_model()
+    client = OpenAI(api_key=api_key)
+    results: dict[str, TranslationResult] = {}
+    for chunk in _translation_chunks(normalized):
+        try:
+            results.update(_translate_review_batch(client, model, chunk))
+        except Exception as exc:
+            emit_api_log(
+                "api_error",
+                {
+                    "provider": "openai",
+                    "api": "chat.completions.create",
+                    "model": model,
+                    "operation": "batch_translation",
+                    "error_type": exc.__class__.__name__,
+                    "error": str(exc).replace(api_key, "REDACTED"),
+                },
+            )
+        for item in chunk:
+            results.setdefault(item["review_id"], _fallback_translation(item))
+    return results
+
+
 def translate_review_to_spanish(review_text: str, owner_reply_text: str) -> TranslationResult:
     review_text = str(review_text or "").strip()
     owner_reply_text = str(owner_reply_text or "").strip()
@@ -84,6 +129,143 @@ def translate_review_to_spanish(review_text: str, owner_reply_text: str) -> Tran
             review_language="",
             owner_reply_language="",
         )
+
+
+def _translation_chunks(
+    reviews: list[dict[str, str]],
+    max_items: int = 8,
+    max_characters: int = 12_000,
+) -> list[list[dict[str, str]]]:
+    chunks: list[list[dict[str, str]]] = []
+    current: list[dict[str, str]] = []
+    current_characters = 0
+    for review in reviews:
+        item_characters = len(review["review_text"]) + len(review["owner_reply_text"])
+        if current and (len(current) >= max_items or current_characters + item_characters > max_characters):
+            chunks.append(current)
+            current = []
+            current_characters = 0
+        current.append(review)
+        current_characters += item_characters
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _translate_review_batch(
+    client: OpenAI,
+    model: str,
+    reviews: list[dict[str, str]],
+) -> dict[str, TranslationResult]:
+    request_payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Detecta el idioma dominante de cada reseña y respuesta del propietario y traduce "
+                    "todo al castellano cuando haga falta. Si ya está en castellano natural, consérvalo. "
+                    "Mantén el tono, los insultos, la ironía y el humor. Devuelve los idiomas originales "
+                    "con códigos ISO 639-1 en minúsculas. Conserva exactamente cada review_id y devuelve "
+                    "una traducción por elemento. Devuelve solo JSON válido."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps({"reviews": reviews}, ensure_ascii=False),
+            },
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "review_batch_translation",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "translations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "review_id": {"type": "string"},
+                                    "review_text_es": {"type": "string"},
+                                    "owner_reply_es": {"type": "string"},
+                                    "review_language": {"type": "string"},
+                                    "owner_reply_language": {"type": "string"},
+                                },
+                                "required": [
+                                    "review_id",
+                                    "review_text_es",
+                                    "owner_reply_es",
+                                    "review_language",
+                                    "owner_reply_language",
+                                ],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    "required": ["translations"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "temperature": 0,
+        "max_completion_tokens": 8_000,
+    }
+    emit_api_log(
+        "api_request",
+        {
+            "provider": "openai",
+            "api": "chat.completions.create",
+            "operation": "batch_translation",
+            "params": request_payload,
+        },
+    )
+    response = _create_completion_with_retries(client, request_payload)
+    payload = json.loads(_extract_message_content(response))
+    translations = payload.get("translations") if isinstance(payload, dict) else None
+    if not isinstance(translations, list):
+        raise RuntimeError("Batch translation payload has no translations array.")
+
+    originals = {item["review_id"]: item for item in reviews}
+    results: dict[str, TranslationResult] = {}
+    for translation in translations:
+        if not isinstance(translation, dict):
+            continue
+        review_id = str(translation.get("review_id") or "").strip()
+        original = originals.get(review_id)
+        if original is None:
+            continue
+        results[review_id] = TranslationResult(
+            review_text_es=str(translation.get("review_text_es") or original["review_text"]).strip()
+            or original["review_text"],
+            owner_reply_es=str(translation.get("owner_reply_es") or original["owner_reply_text"]).strip()
+            or original["owner_reply_text"],
+            review_language=str(translation.get("review_language") or "").strip().lower(),
+            owner_reply_language=str(translation.get("owner_reply_language") or "").strip().lower(),
+        )
+    emit_api_log(
+        "api_response",
+        {
+            "provider": "openai",
+            "api": "chat.completions.create",
+            "operation": "batch_translation",
+            "model": model,
+            "response": sanitize_for_log(_response_to_mapping(response)),
+            "translated_reviews": len(results),
+        },
+    )
+    return results
+
+
+def _fallback_translation(review: dict[str, str]) -> TranslationResult:
+    return TranslationResult(
+        review_text_es=review["review_text"],
+        owner_reply_es=review["owner_reply_text"],
+        review_language="",
+        owner_reply_language="",
+    )
 
 
 def _translate_single_text_to_spanish(
@@ -288,4 +470,7 @@ def _config_scoring_model() -> str:
     except Exception:
         return ""
     scoring = raw.get("scoring") or {}
+    provider = str(scoring.get("provider") or "openai").strip().lower()
+    if provider != "openai":
+        return ""
     return str(scoring.get("model") or "").strip()

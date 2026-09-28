@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reseñas del sitio</title>
+  <link rel="stylesheet" href="/config_ui.css" />
+</head>
+<body class="app-page place-detail-page">
+  <div class="layout app-layout">
+    <aside class="app-sidebar">
+      <div class="brand app-brand">Humorous Review Scout</div>
+      <nav>
+        <a class="nav-item" href="/config">Configuración</a>
+        <a class="nav-item" href="/run">Ejecución en vivo</a>
+        <a class="nav-item" href="/import-review">Importar reseña</a>
+        <a class="nav-item active" href="/db">Base de datos</a>
+      </nav>
+      <div class="actions side-actions app-sidebar-actions">
+        <a class="place-back-link" href="/db">Volver a sitios</a>
+      </div>
+    </aside>
+    <div class="content">
+      <main class="place-detail-main">
+        <section class="place-detail-header" id="place-header">
+          <div class="place-detail-loading">Cargando sitio…</div>
+        </section>
+        <div class="place-detail-feedback" id="place-feedback" role="status" aria-live="polite"></div>
+        <section class="place-review-list" id="place-reviews" aria-label="Reseñas analizadas"></section>
+      </main>
+    </div>
+  </div>
+  <script src="/review_capture.js"></script>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const placeId = params.get("id") || "";
+    const header = document.getElementById("place-header");
+    const reviewsContainer = document.getElementById("place-reviews");
+    const feedback = document.getElementById("place-feedback");
+    let detail = null;
+    let exporting = false;
+    let updatingProcessed = false;
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>'"]/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "'": "&#39;",
+        '"': "&quot;",
+      })[char]);
+    }
+
+    function safeUrl(value) {
+      try {
+        const url = new URL(String(value || ""));
+        return ["http:", "https:"].includes(url.protocol) ? escapeHtml(url.href) : "";
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function statusLabel(status) {
+      if (status === "accepted") return "Aceptada";
+      if (status === "rejected") return "Rechazada";
+      return "Vacía";
+    }
+
+    function renderHeader() {
+      const place = detail.place;
+      const notionUrl = safeUrl(place.notion_page_url);
+      const placeUrl = safeUrl(place.place_url);
+      const accepted = Number(place.accepted_count || 0);
+      header.innerHTML = `
+        <div class="place-detail-title-row">
+          <div>
+            <div class="app-eyebrow">${escapeHtml(place.place_category || "Sitio")}</div>
+            <h1>${escapeHtml(place.place_name || "Sitio")}</h1>
+            <p>${escapeHtml(place.place_address || "Sin dirección")}</p>
+          </div>
+          <div class="place-detail-best-score">
+            <strong>${Number(place.top_humor_score || 0)}</strong>
+            <span>mejor humor</span>
+          </div>
+        </div>
+        <div class="place-detail-toolbar">
+          <div class="place-detail-counts">
+            <span>${Number(place.review_count || 0)} analizadas</span>
+            <span class="is-accepted">${accepted} aceptadas</span>
+            <span class="is-rejected">${Number(place.rejected_count || 0)} rechazadas</span>
+            <span class="is-pending">${Number(place.pending_count || 0)} vacías</span>
+            <span class="${place.processed ? "is-processed" : "is-pending"}">${place.processed ? "Procesado" : "Pendiente de procesar"}</span>
+          </div>
+          <div class="place-detail-actions">
+            ${placeUrl ? `<a class="place-link-button" href="${placeUrl}" target="_blank" rel="noopener noreferrer">Ver sitio</a>` : ""}
+            ${notionUrl ? `<a class="place-link-button" href="${notionUrl}" target="_blank" rel="noopener noreferrer">Abrir Notion</a>` : ""}
+            <button id="export-notion" ${accepted === 0 || exporting ? "disabled" : ""}>
+              ${exporting ? "Exportando…" : notionUrl ? "Actualizar en Notion" : "Exportar a Notion"}
+            </button>
+            <button class="place-processed-button ${place.processed ? "is-reopen" : ""}" id="toggle-place-processed" ${updatingProcessed ? "disabled" : ""}>
+              ${updatingProcessed ? "Guardando…" : place.processed ? "Reabrir sitio" : "Marcar procesado"}
+            </button>
+          </div>
+        </div>`;
+      document.getElementById("export-notion")?.addEventListener("click", exportToNotion);
+      document.getElementById("toggle-place-processed")?.addEventListener("click", togglePlaceProcessed);
+    }
+
+    function renderReview(review, index) {
+      const reviewUrl = safeUrl(review.review_url);
+      const reviewerUrl = safeUrl(review.reviewer_profile_url);
+      const status = review.status || "";
+      const ownerReply = String(review.owner_reply_text || "").trim();
+      const reviewLanguage = String(review.review_language || "").trim().toUpperCase();
+      const ownerLanguage = String(review.owner_reply_language || "").trim().toUpperCase();
+      const reviewer = escapeHtml(review.reviewer_name || "Anónimo");
+      return `
+        <article class="place-review-card status-${status || "pending"}" data-review-id="${escapeHtml(review.review_id)}">
+          <div class="place-review-topline">
+            <div class="place-review-rank">#${index + 1}</div>
+            <div class="place-review-score"><strong>${Number(review.humor_score || 0)}</strong><span>humor</span></div>
+            <div class="place-review-author">
+              <h2>${reviewerUrl ? `<a href="${reviewerUrl}" target="_blank" rel="noopener noreferrer">${reviewer}</a>` : reviewer}</h2>
+              <p>${"★".repeat(Math.max(0, Math.min(5, Number(review.rating || 0))))}<span>${escapeHtml(review.date || "")}</span></p>
+            </div>
+            <span class="place-review-status">${statusLabel(status)}</span>
+          </div>
+          <div class="place-review-copy">
+            <p>${escapeHtml(review.review_text || "(sin texto)")}</p>
+            ${reviewLanguage && reviewLanguage !== "ES" ? `<span class="place-language-badge">Traducida de ${escapeHtml(reviewLanguage)}</span>` : ""}
+          </div>
+          ${ownerReply ? `
+            <div class="place-owner-reply">
+              <strong>Respuesta del propietario</strong>
+              <p>${escapeHtml(ownerReply)}</p>
+              <span>${escapeHtml(review.owner_reply_date || "")}${ownerLanguage && ownerLanguage !== "ES" ? ` · Traducida de ${escapeHtml(ownerLanguage)}` : ""}</span>
+            </div>` : ""}
+          <div class="place-review-editorial">
+            <p><strong>Valoración:</strong> ${escapeHtml(review.humor_notes || "Sin nota adicional.")}</p>
+            <p><strong>Seguridad:</strong> ${escapeHtml(review.safety_label || "Sin clasificar")}</p>
+            <p><strong>Etiquetas:</strong> ${escapeHtml(review.tags || "Sin etiquetas")}</p>
+          </div>
+          <div class="place-review-actions">
+            ${reviewUrl ? `<a href="${reviewUrl}" target="_blank" rel="noopener noreferrer">Ver reseña original</a>` : ""}
+            <a href="/review?id=${encodeURIComponent(review.review_id)}">Abrir detalle individual</a>
+            <div class="place-review-decision">
+              <button class="review-reject ${status === "rejected" ? "is-selected" : ""}" data-status="rejected" ${status === "rejected" ? "disabled" : ""}>Rechazar</button>
+              <button class="review-accept ${status === "accepted" ? "is-selected" : ""}" data-status="accepted" ${status === "accepted" ? "disabled" : ""}>Aceptar</button>
+            </div>
+          </div>
+        </article>`;
+    }
+
+    function renderReviews() {
+      reviewsContainer.innerHTML = detail.reviews.map(renderReview).join("");
+      reviewsContainer.querySelectorAll("button[data-status]").forEach((button) => {
+        button.addEventListener("click", () => updateStatus(button.closest(".place-review-card"), button.dataset.status));
+      });
+    }
+
+    function refreshCounts() {
+      detail.place.accepted_count = detail.reviews.filter((review) => review.status === "accepted").length;
+      detail.place.rejected_count = detail.reviews.filter((review) => review.status === "rejected").length;
+      detail.place.pending_count = detail.reviews.filter((review) => !review.status).length;
+    }
+
+    async function updateStatus(card, status) {
+      const reviewId = card?.dataset.reviewId || "";
+      if (!reviewId) return;
+      card.querySelectorAll("button[data-status]").forEach((button) => button.disabled = true);
+      feedback.textContent = "";
+      try {
+        const response = await fetch("/api/review-status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ review_id: reviewId, status }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.message || "No se pudo guardar el estado.");
+        const review = detail.reviews.find((item) => item.review_id === reviewId);
+        if (review) review.status = status;
+        refreshCounts();
+        renderHeader();
+        renderReviews();
+        feedback.textContent = "Estado actualizado.";
+      } catch (error) {
+        feedback.textContent = error.message || "No se pudo guardar el estado.";
+        renderReviews();
+      }
+    }
+
+    async function togglePlaceProcessed() {
+      if (updatingProcessed) return;
+      const nextProcessed = !detail.place.processed;
+      updatingProcessed = true;
+      feedback.textContent = nextProcessed ? "Marcando el sitio como procesado…" : "Reabriendo el sitio…";
+      renderHeader();
+      try {
+        const response = await fetch("/api/place-processed", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ place_id: detail.place.place_id, processed: nextProcessed }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.message || "No se pudo actualizar el sitio.");
+        detail.place.processed = nextProcessed;
+        detail.place.processed_at = nextProcessed ? new Date().toISOString() : "";
+        if (nextProcessed) {
+          window.location.assign("/db");
+          return;
+        }
+        feedback.textContent = payload.message || "Sitio reabierto.";
+      } catch (error) {
+        feedback.textContent = error.message || "No se pudo actualizar el sitio.";
+      } finally {
+        updatingProcessed = false;
+        renderHeader();
+      }
+    }
+
+    async function exportToNotion() {
+      if (exporting || !detail.place.accepted_count) return;
+      exporting = true;
+      feedback.textContent = "Preparando las capturas…";
+      renderHeader();
+      try {
+        if (!window.ReviewCapture) throw new Error("No se pudo cargar el generador de capturas.");
+        const acceptedReviews = detail.reviews.filter((review) => review.status === "accepted");
+        const captures = [];
+        for (let index = 0; index < acceptedReviews.length; index += 1) {
+          feedback.textContent = `Generando captura ${index + 1} de ${acceptedReviews.length}…`;
+          const review = acceptedReviews[index];
+          const blob = await window.ReviewCapture.buildPng(detail.place, review);
+          const imageData = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(String(reader.result || ""));
+            reader.onerror = () => reject(new Error("No se pudo preparar una captura."));
+            reader.readAsDataURL(blob);
+          });
+          captures.push({ review_id: review.review_id, image_data: imageData });
+        }
+        feedback.textContent = "Subiendo el documento y las capturas a Notion…";
+        const response = await fetch("/api/place-notion-export", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ place_id: detail.place.place_id, captures }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.message || "No se pudo exportar a Notion.");
+        detail.place.notion_page_url = payload.notion_url || detail.place.notion_page_url;
+        feedback.textContent = payload.message || "Notion actualizado.";
+      } catch (error) {
+        feedback.textContent = error.message || "No se pudo exportar a Notion.";
+      } finally {
+        exporting = false;
+        renderHeader();
+      }
+    }
+
+    async function loadPlace() {
+      if (!placeId) {
+        header.innerHTML = "<h1>Falta el identificador del sitio</h1>";
+        return;
+      }
+      try {
+        const response = await fetch(`/api/place-detail?id=${encodeURIComponent(placeId)}`);
+        if (!response.ok) throw new Error("No se pudo cargar el sitio.");
+        detail = await response.json();
+        document.title = `${detail.place.place_name || "Sitio"} · Reseñas`;
+        renderHeader();
+        renderReviews();
+      } catch (error) {
+        header.innerHTML = `<h1>${escapeHtml(error.message || "No se pudo cargar el sitio.")}</h1>`;
+      }
+    }
+
+    loadPlace();
+  </script>
+</body>
+</html>

@@ -16,6 +16,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from .api_cache import load_cached_json, save_cached_json
 from .api_logging import emit_api_log
 from .settings import DiscoverySettings, ProviderSettings
+from .place_metadata import country_name
 from .storage import Place
 
 GENERAL_SEARCH_SEEDS = [
@@ -303,6 +304,8 @@ def discover_places(
                     last_review_date=last_review_date,
                     provider="serpapi",
                     place_url=_build_place_url(place_raw),
+                    average_rating=_place_rating(place_raw),
+                    country=country_name(discovery.country),
                 )
 
                 yield DiscoveredPlace(place=place)
@@ -378,7 +381,13 @@ def discover_places_for_queries(
         for place_raw in results:
             if not _name_matches(place_raw, discovery.name_contains):
                 continue
-            place = _build_place(place_raw, item.category, min_recent_date.date(), discovery.min_total_reviews)
+            place = _build_place(
+                place_raw,
+                item.category,
+                min_recent_date.date(),
+                discovery.min_total_reviews,
+                discovery.country,
+            )
             if place is None:
                 continue
             yield DiscoveredPlace(place=place)
@@ -474,6 +483,7 @@ def _build_place(
     category: str,
     min_recent_date: datetime.date,
     min_total_reviews: int,
+    country: str = "",
 ) -> Place | None:
     place_id = str(place_raw.get("place_id") or "")
     data_id = str(place_raw.get("data_id") or "")
@@ -502,7 +512,17 @@ def _build_place(
         last_review_date=last_review_date,
         provider="serpapi",
         place_url=_build_place_url(place_raw),
+        average_rating=_place_rating(place_raw),
+        country=country_name(country),
     )
+
+
+def _place_rating(place_raw: dict) -> float | None:
+    try:
+        rating = float(place_raw.get("rating"))
+    except (TypeError, ValueError):
+        return None
+    return rating if 0 <= rating <= 5 else None
 
 
 def _category_aliases(category: str) -> list[str]:
