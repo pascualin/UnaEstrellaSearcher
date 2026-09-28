@@ -237,14 +237,18 @@ function upsertRecentActivity(item) {
 
 function upsertTopPlace(item) {
   const existing = progressState.topPlaces.find((entry) => entry.placeKey === item.placeKey);
+  const incrementedReviewCount = Number(existing?.reviewCount || 0) + Number(item.reviewIncrement || 0);
   const merged = {
     ...(existing || {}),
     ...item,
     score: Math.max(Number(existing?.score || 0), Number(item.score || 0)),
-    reviewCount: Math.max(Number(existing?.reviewCount || 0), Number(item.reviewCount || 0)),
+    reviewCount: item.reviewIncrement
+      ? incrementedReviewCount
+      : Math.max(Number(existing?.reviewCount || 0), Number(item.reviewCount || 0)),
     qualifyingCount: Number(existing?.qualifyingCount || 0) + Number(item.qualifyingIncrement || 0),
   };
   delete merged.qualifyingIncrement;
+  delete merged.reviewIncrement;
   progressState.topPlaces = progressState.topPlaces.filter((entry) => entry.placeKey !== item.placeKey);
   progressState.topPlaces.push(merged);
   progressState.topPlaces.sort((a, b) => b.score - a.score || b.reviewCount - a.reviewCount);
@@ -317,7 +321,7 @@ function renderLiveDashboard() {
           <div class="run-live-item-score">#${item.score}</div>
         </div>
         <div class="run-live-item-meta">${item.reviewCount || 0} reseñas puntuadas · ${item.qualifyingCount || 0} candidatas</div>
-        <div class="run-live-item-copy">${item.latestReviewer ? `Última reseña: ${item.latestReviewer}.` : "Sitio procesado durante esta ejecución."}</div>
+        <div class="run-live-item-copy">${item.copy || (item.latestReviewer ? `Última reseña: ${item.latestReviewer}.` : "Sitio procesado durante esta ejecución.")}</div>
         ${item.href ? `<div><a class="run-live-link" href="${item.href}">Abrir sitio</a></div>` : ""}
       </div>
     `,
@@ -691,6 +695,8 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
     if (event.event === "theme_review_scored") {
       const candidate = Boolean(event.episode_candidate);
       const fromArchive = event.source === "archive";
+      const numericHumorScore = Number(event.humor_score || 0);
+      const reviewerName = String(event.reviewer_name || "").trim();
       if (candidate) {
         progressState.episodeCandidates += 1;
         setText("live-episode-candidates", String(progressState.episodeCandidates));
@@ -699,6 +705,37 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         setText("live-reusable", String(progressState.reusableFinds));
       }
       const placeKey = event.place_id || event.place_name || event.review_id;
+      if (fromArchive) {
+        progressState.collectedReviews += 1;
+        progressState.scoredReviews += 1;
+        progressState.totalScore += numericHumorScore;
+        progressState.topScore = progressState.topScore == null
+          ? numericHumorScore
+          : Math.max(progressState.topScore, numericHumorScore);
+        progressState.aboveThreshold += 1;
+        setText("live-count", String(progressState.collectedReviews));
+        setText("live-above-threshold", String(progressState.aboveThreshold));
+        if (candidate) {
+          upsertTopPlace({
+            placeKey,
+            place: event.place_name || "Sitio archivado",
+            score: numericHumorScore,
+            reviewIncrement: 1,
+            qualifyingIncrement: 1,
+            latestReviewer: reviewerName,
+            copy: `${event.observance || "Celebración"} · Relevancia #${event.relevance_score || 0}`,
+            href: placeDetailHref(event.place_id),
+          });
+          setText("live-sites", String(progressState.topPlaces.length));
+          progressState.processedSites = progressState.topPlaces.length;
+          setText("live-processed-sites", String(progressState.processedSites));
+          progressState.productivePlaces = progressState.topPlaces.length;
+        }
+        progressState.lastScoreText = reviewerName
+          ? `${reviewerName}: #${numericHumorScore}`
+          : `#${numericHumorScore}`;
+        setText("live-scores", progressState.lastScoreText);
+      }
       upsertRecentActivity({
         placeKey,
         title: event.place_name || "Reseña temática",
@@ -781,8 +818,11 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
           : `Finalizado. Sitios: ${event.discovered}, reseñas nuevas: ${event.collected}`,
       );
       setText("live-count", String(progressState.collectedReviews));
-      setText("live-sites", String(event.discovered ?? byId("live-sites")?.textContent ?? "0"));
-      progressState.processedSites = Number(event.discovered ?? progressState.processedSites);
+      const completedSiteCount = event.mode === "episode"
+        ? Math.max(Number(event.discovered || 0), progressState.topPlaces.length)
+        : Number(event.discovered ?? progressState.processedSites);
+      setText("live-sites", String(completedSiteCount));
+      progressState.processedSites = completedSiteCount;
       updateEta();
       setText("live-eta", "Completado");
       if (progressTimer) clearInterval(progressTimer);
