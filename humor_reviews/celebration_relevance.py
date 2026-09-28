@@ -22,11 +22,12 @@ class RelevanceResult:
 RELEVANCE_ALIASES = {
     "pulpo": ("pulperia", "pulpeira", "octopus"),
     "dislexia": ("dislexia", "logopedia", "dyslexia"),
-    "vision": ("optica", "oftalm", "oculista", "vista"),
+    "vision": ("optica", "oftalm", "oculista", "optomet"),
     "podologia": ("podolog", "podologo", "podologa", "feet", "foot"),
-    "espacio": ("planetario", "astronom", "alien", "cosmic", "cosmico"),
+    "espacio": ("planetario", "astronom", "alien", "cosmic", "cosmico", "nasa"),
     "chocolate": ("chocolate", "chocolateria", "cacao"),
 }
+AMBIGUOUS_RELEVANCE_TOKENS = {"espacio", "vision", "vista"}
 
 
 def score_celebration_relevance(
@@ -104,20 +105,15 @@ def score_celebration_relevance_local(
     place_category: str,
     observances: list[str],
 ) -> RelevanceResult:
-    combined = " ".join([place_name, place_category, review_text, owner_reply])
-    decomposed = unicodedata.normalize("NFKD", combined)
-    haystack = " ".join(
-        re.sub(
-            r"[^a-z0-9]+",
-            " ",
-            "".join(char for char in decomposed if not unicodedata.combining(char)).casefold(),
-        ).split()
-    )
+    place_haystack = _normalize_relevance_text(" ".join([place_name, place_category]))
+    review_haystack = _normalize_relevance_text(" ".join([review_text, owner_reply]))
+    combined_haystack = f"{place_haystack} {review_haystack}".strip()
     stopwords = {
         "dia", "semana", "internacional", "mundial", "global", "nacional",
         "del", "de", "la", "las", "los", "el", "y", "para", "contra",
     }
-    haystack_words = set(haystack.split())
+    place_words = set(place_haystack.split())
+    review_words = set(review_haystack.split())
     best = RelevanceResult(0, "", "No se encontró relación temática directa.")
     for observance in observances:
         normalized = unicodedata.normalize("NFKD", observance)
@@ -129,30 +125,48 @@ def score_celebration_relevance_local(
             for token in re.findall(r"[a-z0-9]+", normalized)
             if token not in stopwords and len(token) >= 4
         ]
-        matched = [token for token in tokens if token in haystack_words]
+        place_matches = [token for token in tokens if token in place_words]
+        review_matches = [
+            token
+            for token in tokens
+            if token in review_words and token not in AMBIGUOUS_RELEVANCE_TOKENS
+        ]
         alias_matches: list[str] = []
         for token in tokens:
             aliases = RELEVANCE_ALIASES.get(token, ())
-            alias_matches.extend(alias for alias in aliases if alias in haystack)
-            if len(token) >= 5 and any(word.startswith(token[:4]) for word in haystack_words):
-                matched.append(token)
-        matched = list(dict.fromkeys(matched))
+            alias_matches.extend(alias for alias in aliases if alias in combined_haystack)
+            if (
+                token not in AMBIGUOUS_RELEVANCE_TOKENS
+                and len(token) >= 5
+                and any(word.startswith(token[:4]) for word in place_words)
+            ):
+                place_matches.append(token)
+        place_matches = list(dict.fromkeys(place_matches))
+        review_matches = list(dict.fromkeys(review_matches))
         alias_matches = list(dict.fromkeys(alias_matches))
         score = 0
-        if tokens and len(matched) == len(tokens):
+        if tokens and len(place_matches) == len(tokens):
             score = 95
         elif alias_matches:
-            score = 85
-        elif matched:
-            score = min(90, 60 + (30 * len(matched) // max(1, len(tokens))))
+            score = 90
+        elif place_matches:
+            score = min(90, 70 + (20 * len(place_matches) // max(1, len(tokens))))
+        elif review_matches:
+            score = min(90, 65 + (25 * len(review_matches) // max(1, len(tokens))))
         if score > best.score:
-            evidence = matched or alias_matches
+            evidence = place_matches or alias_matches or review_matches
             best = RelevanceResult(
                 score,
                 observance,
                 f"Coincidencia temática local: {', '.join(evidence)}.",
             )
     return best
+
+
+def _normalize_relevance_text(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", str(value or ""))
+    ascii_text = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", ascii_text.casefold()).split())
 
 
 def openai_planning_config(settings: ScoringSettings) -> tuple[str, str]:

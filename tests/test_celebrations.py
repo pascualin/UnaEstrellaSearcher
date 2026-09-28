@@ -204,6 +204,28 @@ class CelebrationRelevanceTests(unittest.TestCase):
         self.assertGreaterEqual(result.score, 60)
         self.assertEqual(result.observance, "Día Internacional del Pulpo")
 
+    def test_local_relevance_does_not_treat_generic_space_as_outer_space(self) -> None:
+        result = score_celebration_relevance_local(
+            "El espacio entre las mesas era mínimo y no se podía pasar.",
+            "",
+            "Bar del Centro",
+            "restaurant",
+            ["Semana Mundial del Espacio"],
+        )
+
+        self.assertEqual(result.score, 0)
+
+    def test_local_relevance_recognizes_specific_space_signals(self) -> None:
+        result = score_celebration_relevance_local(
+            "Fuimos a buscar aliens y no vimos ninguno.",
+            "",
+            "Area 51",
+            "tourist attraction",
+            ["Semana Mundial del Espacio"],
+        )
+
+        self.assertGreaterEqual(result.score, 60)
+
 
 class CelebrationStrategyTests(unittest.TestCase):
     @patch("humor_reviews.celebration_strategy.OpenAI")
