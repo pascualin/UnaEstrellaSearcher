@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -68,6 +69,7 @@ def sync_place_reviews_page(
     reviews: list[dict[str, Any]],
     page_id: str = "",
     page_url: str = "",
+    review_images: dict[str, bytes] | None = None,
 ) -> NotionPage:
     token = os.getenv("NOTION_ACCESS_TOKEN", "").strip()
     database_id = (
@@ -84,7 +86,8 @@ def sync_place_reviews_page(
     schema = _fetch_database_schema(token, database_id)
     title_property = _title_property_name(schema)
     properties = _build_place_properties(place, reviews, title_property, schema)
-    children = _build_place_children(reviews)
+    image_uploads = _upload_place_review_images(token, reviews, review_images or {})
+    children = _build_place_children(reviews, image_uploads)
     normalized_page_id = page_id.strip()
 
     if normalized_page_id:
@@ -105,11 +108,12 @@ def sync_place_reviews_page(
             url=str(data.get("url") or page_url),
         )
 
-    payload = {
+    payload: dict[str, Any] = {
         "parent": {"database_id": database_id},
         "properties": properties,
-        "children": children[:100],
     }
+    if not image_uploads:
+        payload["children"] = children[:100]
     response = requests.post(
         f"{NOTION_API_BASE}/pages",
         headers=_headers(token),
@@ -124,7 +128,10 @@ def sync_place_reviews_page(
     created_page_id = str(data.get("id") or "")
     if not created_page_id:
         raise NotionSyncError("Notion create page did not return a page ID.")
-    _append_children(token, created_page_id, children[100:])
+    if image_uploads:
+        _append_children(token, created_page_id, children)
+    else:
+        _append_children(token, created_page_id, children[100:])
     _set_page_icon(token, created_page_id, "⭐")
     return NotionPage(page_id=created_page_id, url=str(data.get("url") or ""))
 
@@ -262,12 +269,19 @@ def _build_children(review: dict[str, Any]) -> list[dict[str, Any]]:
     return children
 
 
-def _build_place_children(reviews: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_place_children(
+    reviews: list[dict[str, Any]],
+    image_uploads: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     children: list[dict[str, Any]] = []
+    image_uploads = image_uploads or {}
     for index, review in enumerate(reviews, start=1):
         score = int(review.get("humor_score") or 0)
         children.extend(_heading_block(f"Reseña {index} · Humor {score}/100"))
         children.extend(_build_children(review))
+        upload_id = image_uploads.get(str(review.get("review_id") or ""))
+        if upload_id:
+            children.append(_image_block(upload_id))
         if index < len(reviews):
             children.append({"object": "block", "type": "divider", "divider": {}})
     return children
@@ -360,17 +374,48 @@ def _replace_page_children(token: str, page_id: str, children: list[dict[str, An
 
 
 def _append_children(token: str, page_id: str, children: list[dict[str, Any]]) -> None:
-    for offset in range(0, len(children), 100):
-        response = requests.patch(
-            f"{NOTION_API_BASE}/blocks/{page_id}/children",
-            headers=_headers(token),
-            json={"children": children[offset : offset + 100]},
-            timeout=30,
-        )
-        if response.status_code >= 400:
-            raise NotionSyncError(
-                f"Notion append page blocks failed ({response.status_code}): {response.text[:400]}"
+    groups: list[tuple[bool, list[dict[str, Any]]]] = []
+    for child in children:
+        uses_file_upload = child.get("type") == "image"
+        if not groups or groups[-1][0] != uses_file_upload:
+            groups.append((uses_file_upload, []))
+        groups[-1][1].append(child)
+
+    for uses_file_upload, group in groups:
+        for offset in range(0, len(group), 100):
+            response = requests.patch(
+                f"{NOTION_API_BASE}/blocks/{page_id}/children",
+                headers=_file_headers(token) if uses_file_upload else _headers(token),
+                json={"children": group[offset : offset + 100]},
+                timeout=30,
             )
+            if response.status_code >= 400:
+                raise NotionSyncError(
+                    f"Notion append page blocks failed ({response.status_code}): {response.text[:400]}"
+                )
+
+
+def _upload_place_review_images(
+    token: str,
+    reviews: list[dict[str, Any]],
+    review_images: dict[str, bytes],
+) -> dict[str, str]:
+    uploads: dict[str, str] = {}
+    for index, review in enumerate(reviews, start=1):
+        review_id = str(review.get("review_id") or "").strip()
+        image_bytes = review_images.get(review_id, b"")
+        if not review_id or not image_bytes:
+            continue
+        place_name = str(review.get("place_name") or "resena").strip()
+        reviewer_name = str(review.get("reviewer_name") or f"{index}").strip()
+        filename_stem = re.sub(
+            r"[^A-Za-z0-9._-]+", "-", f"{place_name}-{reviewer_name}"
+        ).strip("-.")
+        filename = f"{(filename_stem or f'resena-{index}')[:176]}.png"
+        upload_id = _create_file_upload(token, filename)
+        _send_file_upload(token, upload_id, filename, image_bytes)
+        uploads[review_id] = upload_id
+    return uploads
 
 
 def _create_file_upload(token: str, filename: str) -> str:
@@ -413,15 +458,7 @@ def _send_file_upload(token: str, upload_id: str, filename: str, image_bytes: by
 def _append_image_block(token: str, page_id: str, upload_id: str) -> None:
     payload = {
         "children": [
-            {
-                "object": "block",
-                "type": "image",
-                "image": {
-                    "caption": [],
-                    "type": "file_upload",
-                    "file_upload": {"id": upload_id},
-                },
-            }
+            _image_block(upload_id)
         ]
     }
     response = requests.patch(
@@ -434,6 +471,18 @@ def _append_image_block(token: str, page_id: str, upload_id: str) -> None:
         raise NotionSyncError(
             f"Notion append image block failed ({response.status_code}): {response.text[:400]}"
         )
+
+
+def _image_block(upload_id: str) -> dict[str, Any]:
+    return {
+        "object": "block",
+        "type": "image",
+        "image": {
+            "caption": [],
+            "type": "file_upload",
+            "file_upload": {"id": upload_id},
+        },
+    }
 
 
 def _set_page_icon(token: str, page_id: str, emoji: str) -> None:

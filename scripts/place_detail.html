@@ -30,6 +30,7 @@
       </main>
     </div>
   </div>
+  <script src="/review_capture.js"></script>
   <script>
     const params = new URLSearchParams(window.location.search);
     const placeId = params.get("id") || "";
@@ -185,13 +186,29 @@
     async function exportToNotion() {
       if (exporting || !detail.place.accepted_count) return;
       exporting = true;
-      feedback.textContent = "Preparando el documento de Notion…";
+      feedback.textContent = "Preparando las capturas…";
       renderHeader();
       try {
+        if (!window.ReviewCapture) throw new Error("No se pudo cargar el generador de capturas.");
+        const acceptedReviews = detail.reviews.filter((review) => review.status === "accepted");
+        const captures = [];
+        for (let index = 0; index < acceptedReviews.length; index += 1) {
+          feedback.textContent = `Generando captura ${index + 1} de ${acceptedReviews.length}…`;
+          const review = acceptedReviews[index];
+          const blob = await window.ReviewCapture.buildPng(detail.place, review);
+          const imageData = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(String(reader.result || ""));
+            reader.onerror = () => reject(new Error("No se pudo preparar una captura."));
+            reader.readAsDataURL(blob);
+          });
+          captures.push({ review_id: review.review_id, image_data: imageData });
+        }
+        feedback.textContent = "Subiendo el documento y las capturas a Notion…";
         const response = await fetch("/api/place-notion-export", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ place_id: detail.place.place_id }),
+          body: JSON.stringify({ place_id: detail.place.place_id, captures }),
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.message || "No se pudo exportar a Notion.");

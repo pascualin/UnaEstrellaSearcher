@@ -60,6 +60,9 @@ GOOGLE_REVIEW_HOSTS = {
 IMAGE_IMPORT_MAX_BYTES = 12 * 1024 * 1024
 IMAGE_IMPORT_MAX_FILES = 8
 IMAGE_IMPORT_TOTAL_MAX_BYTES = 32 * 1024 * 1024
+NOTION_CAPTURE_MAX_BYTES = 12 * 1024 * 1024
+NOTION_CAPTURE_MAX_FILES = 50
+NOTION_CAPTURE_TOTAL_MAX_BYTES = 64 * 1024 * 1024
 OPENAI_MODEL_CACHE_TTL_SECONDS = 300
 _openai_model_cache: dict[str, Any] = {"key": "", "expires_at": 0.0, "payload": None}
 
@@ -858,6 +861,7 @@ def _store_place_notion_page(
     page_id: str,
     page_url: str,
     review_ids: list[str],
+    image_review_ids: list[str],
 ) -> None:
     db_path = _db_path()
     if not db_path.exists():
@@ -880,9 +884,50 @@ def _store_place_notion_page(
                 f"UPDATE reviews SET notion_page_id=?, notion_page_url=? WHERE review_id IN ({placeholders})",
                 (page_id, page_url, *review_ids),
             )
+        if image_review_ids:
+            placeholders = ", ".join("?" for _ in image_review_ids)
+            conn.execute(
+                f"UPDATE reviews SET notion_image_uploaded_at=? WHERE review_id IN ({placeholders})",
+                (now, *image_review_ids),
+            )
 
 
-def _export_place_to_notion(place_id: str) -> dict[str, Any]:
+def _decode_notion_review_images(raw_images: Any) -> dict[str, bytes]:
+    if not isinstance(raw_images, list) or not raw_images:
+        raise ValueError("No se recibieron las capturas de las reseñas aceptadas.")
+    if len(raw_images) > NOTION_CAPTURE_MAX_FILES:
+        raise ValueError(f"Demasiadas capturas. Usa como máximo {NOTION_CAPTURE_MAX_FILES}.")
+
+    images: dict[str, bytes] = {}
+    total_bytes = 0
+    for raw_image in raw_images:
+        if not isinstance(raw_image, dict):
+            raise ValueError("El formato de una captura no es válido.")
+        review_id = str(raw_image.get("review_id") or "").strip()
+        image_data = str(raw_image.get("image_data") or "").strip()
+        if not review_id or not image_data:
+            raise ValueError("Cada captura debe indicar su reseña y contener una imagen.")
+        if "," in image_data:
+            image_data = image_data.split(",", 1)[1]
+        try:
+            image_bytes = base64.b64decode(image_data, validate=True)
+        except Exception as exc:
+            raise ValueError("Una de las capturas no se pudo leer.") from exc
+        if not image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("Las capturas para Notion deben estar en formato PNG.")
+        if len(image_bytes) > NOTION_CAPTURE_MAX_BYTES:
+            raise ValueError("Una captura es demasiado grande para subirla a Notion.")
+        total_bytes += len(image_bytes)
+        if total_bytes > NOTION_CAPTURE_TOTAL_MAX_BYTES:
+            raise ValueError("El conjunto de capturas es demasiado grande para subirlo a Notion.")
+        images[review_id] = image_bytes
+    return images
+
+
+def _export_place_to_notion(
+    place_id: str,
+    review_images: dict[str, bytes],
+) -> dict[str, Any]:
     detail = _fetch_place_detail(place_id)
     if not detail:
         raise LookupError("Sitio no encontrado.")
@@ -892,6 +937,10 @@ def _export_place_to_notion(place_id: str) -> dict[str, Any]:
     ]
     if not accepted_candidates:
         raise ValueError("Acepta al menos una reseña antes de exportar.")
+    accepted_ids = {str(review["review_id"]) for review in accepted_candidates}
+    missing_images = accepted_ids.difference(review_images)
+    if missing_images:
+        raise ValueError("No se pudo generar la captura de todas las reseñas aceptadas.")
     accepted_reviews = [
         review
         for candidate in accepted_candidates
@@ -902,11 +951,16 @@ def _export_place_to_notion(place_id: str) -> dict[str, Any]:
         accepted_reviews,
         page_id=str(place.get("notion_page_id") or ""),
         page_url=str(place.get("notion_page_url") or ""),
+        review_images={
+            str(review["review_id"]): review_images[str(review["review_id"])]
+            for review in accepted_reviews
+        },
     )
     _store_place_notion_page(
         place_id,
         page.page_id,
         page.url,
+        [str(review["review_id"]) for review in accepted_reviews],
         [str(review["review_id"]) for review in accepted_reviews],
     )
     return {
@@ -915,7 +969,7 @@ def _export_place_to_notion(place_id: str) -> dict[str, Any]:
         "exported_reviews": len(accepted_reviews),
         "message": (
             f"Página de Notion actualizada con {len(accepted_reviews)} "
-            f"{'reseña' if len(accepted_reviews) == 1 else 'reseñas'} aceptadas."
+            f"{'reseña' if len(accepted_reviews) == 1 else 'reseñas'} aceptadas y sus capturas."
         ),
     }
 
@@ -1763,6 +1817,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(404, b"Not found", "text/plain")
             return
+        if self.path == "/review_capture.js":
+            js_path = ROOT / "scripts" / "review_capture.js"
+            if js_path.exists():
+                self._send(
+                    200,
+                    js_path.read_bytes(),
+                    "application/javascript; charset=utf-8",
+                    headers={"Cache-Control": "no-store"},
+                )
+                return
+            self._send(404, b"Not found", "text/plain")
+            return
         if self.path == "/" or self.path in {"/config", "/config/"}:
             html = _load_html(CONFIG_HTML_PATH, "Missing config_view.html")
             self._send(
@@ -2064,7 +2130,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, b"missing place_id", "text/plain")
                 return
             try:
-                result = _export_place_to_notion(place_id)
+                review_images = _decode_notion_review_images(payload.get("captures"))
+                result = _export_place_to_notion(place_id, review_images)
             except LookupError as exc:
                 self._send(404, json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"), "application/json")
                 return

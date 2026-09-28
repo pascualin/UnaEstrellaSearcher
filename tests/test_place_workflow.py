@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import sqlite3
 import tempfile
 import unittest
@@ -10,6 +11,9 @@ from humor_reviews.notion_sync import NotionPage, _build_place_children
 from humor_reviews.storage import Place, Review, Storage
 from humor_reviews.translation import TranslationResult
 from scripts import config_ui
+
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\nmock-png"
 
 
 def _review(review_id: str, place_id: str, score: int) -> Review:
@@ -147,20 +151,36 @@ class PlaceWorkflowTests(unittest.TestCase):
     def test_export_sends_only_accepted_reviews_to_one_place_page(self, sync_page) -> None:
         sync_page.return_value = NotionPage(page_id="notion-page", url="https://notion.so/page")
 
-        result = config_ui._export_place_to_notion("place-1")
+        result = config_ui._export_place_to_notion("place-1", {"top": PNG_BYTES})
 
         self.assertEqual(result["exported_reviews"], 1)
         exported_reviews = sync_page.call_args.args[1]
         self.assertEqual([review["review_id"] for review in exported_reviews], ["top"])
+        self.assertEqual(sync_page.call_args.kwargs["review_images"], {"top": PNG_BYTES})
         with sqlite3.connect(self.data_dir / "humor_reviews.db") as conn:
-            place_url = conn.execute(
-                "SELECT notion_page_url FROM places WHERE place_id='place-1'"
+            place_url = conn.execute("SELECT notion_page_url FROM places WHERE place_id='place-1'").fetchone()[0]
+            image_uploaded_at = conn.execute(
+                "SELECT notion_image_uploaded_at FROM reviews WHERE review_id='top'"
             ).fetchone()[0]
         self.assertEqual(place_url, "https://notion.so/page")
+        self.assertTrue(image_uploaded_at)
 
     def test_export_requires_an_accepted_review(self) -> None:
         with self.assertRaisesRegex(ValueError, "Acepta al menos una"):
-            config_ui._export_place_to_notion("place-2")
+            config_ui._export_place_to_notion("place-2", {})
+
+    def test_export_requires_a_capture_for_every_accepted_review(self) -> None:
+        with self.assertRaisesRegex(ValueError, "captura de todas"):
+            config_ui._export_place_to_notion("place-1", {})
+
+    def test_notion_capture_payload_is_decoded(self) -> None:
+        encoded = base64.b64encode(PNG_BYTES).decode("ascii")
+
+        images = config_ui._decode_notion_review_images(
+            [{"review_id": "top", "image_data": f"data:image/png;base64,{encoded}"}]
+        )
+
+        self.assertEqual(images, {"top": PNG_BYTES})
 
 
 class NotionPlaceDocumentTests(unittest.TestCase):
@@ -180,6 +200,18 @@ class NotionPlaceDocumentTests(unittest.TestCase):
             if block["type"] == "heading_2"
         ]
         self.assertEqual(headings, ["Reseña 1 · Humor 90/100", "Reseña 2 · Humor 70/100"])
+
+    def test_review_capture_is_inserted_before_the_next_review(self) -> None:
+        reviews = [
+            {"review_id": "first", "reviewer_name": "Primera", "review_text": "Uno", "humor_score": 90},
+            {"review_id": "second", "reviewer_name": "Segunda", "review_text": "Dos", "humor_score": 70},
+        ]
+
+        children = _build_place_children(reviews, {"first": "upload-1", "second": "upload-2"})
+
+        block_types = [block["type"] for block in children]
+        self.assertEqual(block_types, ["heading_2", "paragraph", "quote", "image", "divider", "heading_2", "paragraph", "quote", "image"])
+        self.assertEqual(children[3]["image"]["file_upload"]["id"], "upload-1")
 
 
 if __name__ == "__main__":
