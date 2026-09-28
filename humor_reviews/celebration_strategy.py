@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -9,6 +8,7 @@ from typing import Any
 from openai import OpenAI
 
 from .settings import ScoringSettings
+from .celebration_relevance import openai_planning_config
 
 
 @dataclass
@@ -30,18 +30,13 @@ def build_celebration_strategy(
     observances: list[dict[str, str]],
     settings: ScoringSettings,
 ) -> CelebrationStrategy:
-    api_key = os.getenv(settings.api_key_env)
-    if not api_key:
-        raise RuntimeError(
-            f"Missing API key env var {settings.api_key_env} for OpenAI strategy."
-        )
-
+    api_key, model = openai_planning_config(settings)
     client = OpenAI(api_key=api_key)
     payload = observances
 
     try:
         response = client.chat.completions.create(
-            model=settings.model,
+            model=model,
             messages=[
                 {
                     "role": "system",
@@ -65,7 +60,7 @@ def build_celebration_strategy(
                         "- selected_observances: array de nombres elegidos\n"
                         "- discarded_observances: array de nombres descartados\n"
                         "- notes: razon corta\n"
-                        "- searches: array de maximo 5 objetos con query, region y rationale\n"
+                        "- searches: array de maximo 12 objetos con query, region y rationale\n"
                         "Las queries deben ser cortas, aptas para Google Maps y centradas en Espana.\n"
                         "Prefiere categorias y consultas como atracciones, talleres, experiencias, "
                         "museos peculiares, restaurantes tematicos, escape rooms, mercadillos, "
@@ -94,7 +89,7 @@ def build_celebration_strategy(
                             "notes": {"type": "string"},
                             "searches": {
                                 "type": "array",
-                                "maxItems": 5,
+                                "maxItems": 12,
                                 "items": {
                                     "type": "object",
                                     "properties": {

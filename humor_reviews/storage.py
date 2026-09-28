@@ -131,12 +131,31 @@ class Storage:
                     discovered_count INTEGER,
                     collected_count INTEGER,
                     funny_count INTEGER,
+                    relevance_threshold INTEGER DEFAULT 60,
+                    relevant_count INTEGER DEFAULT 0,
+                    reusable_count INTEGER DEFAULT 0,
                     created_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS celebration_review_matches (
+                    run_id INTEGER,
+                    review_id TEXT,
+                    observance TEXT,
+                    relevance_score INTEGER,
+                    relevance_notes TEXT,
+                    is_episode_candidate INTEGER DEFAULT 0,
+                    source TEXT,
+                    created_at TEXT,
+                    PRIMARY KEY (run_id, review_id)
                 )
                 """
             )
             self._ensure_place_columns(conn)
             self._ensure_review_columns(conn)
+            self._ensure_celebration_columns(conn)
 
     def _ensure_place_columns(self, conn: sqlite3.Connection) -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(places)").fetchall()}
@@ -174,6 +193,23 @@ class Storage:
         if "original_owner_reply_language" not in columns:
             conn.execute("ALTER TABLE reviews ADD COLUMN original_owner_reply_language TEXT")
         self._migrate_legacy_review_status(conn, columns)
+
+    def _ensure_celebration_columns(self, conn: sqlite3.Connection) -> None:
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(celebration_runs)").fetchall()
+        }
+        if "relevance_threshold" not in columns:
+            conn.execute(
+                "ALTER TABLE celebration_runs ADD COLUMN relevance_threshold INTEGER DEFAULT 60"
+            )
+        if "relevant_count" not in columns:
+            conn.execute(
+                "ALTER TABLE celebration_runs ADD COLUMN relevant_count INTEGER DEFAULT 0"
+            )
+        if "reusable_count" not in columns:
+            conn.execute(
+                "ALTER TABLE celebration_runs ADD COLUMN reusable_count INTEGER DEFAULT 0"
+            )
 
     def _migrate_legacy_review_status(
         self,
@@ -364,17 +400,20 @@ class Storage:
         discovered_count: int,
         collected_count: int,
         funny_count: int,
-    ) -> None:
+        relevance_threshold: int = 60,
+        relevant_count: int = 0,
+        reusable_count: int = 0,
+    ) -> int:
         now = datetime.utcnow().isoformat()
         with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT INTO celebration_runs (
                     year, month, day, target_funny_reviews, humor_threshold,
                     observances_json, strategy_json, discovered_count, collected_count,
-                    funny_count, created_at
+                    funny_count, relevance_threshold, relevant_count, reusable_count, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     year,
@@ -387,6 +426,48 @@ class Storage:
                     discovered_count,
                     collected_count,
                     funny_count,
+                    relevance_threshold,
+                    relevant_count,
+                    reusable_count,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def record_celebration_match(
+        self,
+        run_id: int,
+        review_id: str,
+        observance: str,
+        relevance_score: int,
+        relevance_notes: str,
+        is_episode_candidate: bool,
+        source: str,
+    ) -> None:
+        now = datetime.utcnow().isoformat()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO celebration_review_matches (
+                    run_id, review_id, observance, relevance_score,
+                    relevance_notes, is_episode_candidate, source, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id, review_id) DO UPDATE SET
+                    observance=excluded.observance,
+                    relevance_score=excluded.relevance_score,
+                    relevance_notes=excluded.relevance_notes,
+                    is_episode_candidate=excluded.is_episode_candidate,
+                    source=excluded.source
+                """,
+                (
+                    run_id,
+                    review_id,
+                    observance,
+                    relevance_score,
+                    relevance_notes,
+                    1 if is_episode_candidate else 0,
+                    source,
                     now,
                 ),
             )

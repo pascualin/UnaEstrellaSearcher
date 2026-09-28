@@ -22,6 +22,8 @@ let importedReviewImages = [];
 const progressState = {
   collectedReviews: 0,
   aboveThreshold: 0,
+  episodeCandidates: 0,
+  reusableFinds: 0,
   processedSites: 0,
   startedAtMs: 0,
   lastScoreText: "",
@@ -326,6 +328,7 @@ async function loadConfig() {
   appConfig = cfg;
 
   setFieldValue("humor_threshold", cfg.app?.humor_threshold || 0);
+  setFieldValue("episode-humor-threshold", cfg.app?.humor_threshold || 60);
   setFieldValue("max_reviews_per_place", cfg.app?.max_reviews_per_place || 0);
   setFieldValue("max_places_per_run", cfg.app?.max_places_per_run || 0);
   setFieldValue("country", cfg.discovery?.country || "");
@@ -430,6 +433,8 @@ function resetLiveProgress() {
   if (!has("live-stage")) return;
   progressState.collectedReviews = 0;
   progressState.aboveThreshold = 0;
+  progressState.episodeCandidates = 0;
+  progressState.reusableFinds = 0;
   progressState.processedSites = 0;
   progressState.startedAtMs = Date.now();
   progressState.lastScoreText = "";
@@ -452,6 +457,9 @@ function resetLiveProgress() {
   setText("live-remaining-sites", String(configNumber("app.max_places_per_run", 0)));
   setText("live-count", "0");
   setText("live-above-threshold", "0");
+  setText("live-episode-candidates", "0");
+  setText("live-reusable", "0");
+  setText("episode-observances", "");
   setText("live-eta", "-");
   setText("live-scores", "Esperando primeras puntuaciones");
   renderLiveDashboard();
@@ -469,6 +477,46 @@ async function runWeekly() {
   }
   if (progressTimer) clearInterval(progressTimer);
   progressTimer = setInterval(pollProgress, 1200);
+}
+
+async function runEpisodeSearch() {
+  const episodeDate = fieldValue("episode-date").trim();
+  if (!episodeDate) {
+    setText("status", "Selecciona la fecha de emisión.");
+    return;
+  }
+  const button = byId("run-episode");
+  if (button) button.disabled = true;
+  setText("status", "Preparando la búsqueda del episodio...");
+  runFinished = false;
+  resetLiveProgress();
+  progressOffset = 0;
+  try {
+    const res = await fetch("/api/run-episode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        date: episodeDate,
+        target: Number(fieldValue("episode-target", 5)),
+        humor_threshold: Number(fieldValue("episode-humor-threshold", 60)),
+        relevance_threshold: Number(fieldValue("episode-relevance-threshold", 60)),
+      }),
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      setText("status", payload.message || "No se pudo iniciar la búsqueda del episodio.");
+      runFinished = true;
+      return;
+    }
+    setText("status", `Buscando celebraciones y reseñas para ${episodeDate}.`);
+    if (progressTimer) clearInterval(progressTimer);
+    progressTimer = setInterval(pollProgress, 1200);
+  } catch (error) {
+    setText("status", "Error de red al iniciar la búsqueda del episodio.");
+    runFinished = true;
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function runDryRun() {
@@ -513,6 +561,32 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         badge: event.region || "",
         meta: progressState.currentQuery,
         copy: `Consulta lanzada para ${progressState.currentQuery}.`,
+      });
+    }
+    if (event.event === "observances_found") {
+      const observances = Array.isArray(event.observances) ? event.observances : [];
+      setText("live-stage", "Preparando celebraciones");
+      setText(
+        "episode-observances",
+        observances.length
+          ? `Celebraciones: ${observances.join(" · ")}`
+          : "No se encontraron celebraciones para esa fecha.",
+      );
+      pushLimited(progressState.recentActivity, {
+        title: "Celebraciones encontradas",
+        badge: String(observances.length),
+        meta: event.episode_date || "",
+        copy: observances.join(" · ") || "Sin celebraciones disponibles.",
+      });
+    }
+    if (event.event === "celebration_strategy") {
+      const selected = Array.isArray(event.selected_observances) ? event.selected_observances : [];
+      setText("live-stage", "Planificando búsquedas");
+      pushLimited(progressState.recentActivity, {
+        title: "Estrategia temática",
+        badge: `${event.search_count || 0} búsquedas`,
+        meta: selected.join(" · "),
+        copy: "La estrategia está lista y comienza revisando el archivo existente.",
       });
     }
     if (event.event === "discovered_place") {
@@ -588,6 +662,30 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         href: topPlace.href,
       });
     }
+    if (event.event === "theme_review_scored") {
+      const candidate = Boolean(event.episode_candidate);
+      const fromArchive = event.source === "archive";
+      if (candidate) {
+        progressState.episodeCandidates += 1;
+        setText("live-episode-candidates", String(progressState.episodeCandidates));
+      } else if (!fromArchive) {
+        progressState.reusableFinds += 1;
+        setText("live-reusable", String(progressState.reusableFinds));
+      }
+      const placeKey = event.place_id || event.place_name || event.review_id;
+      upsertRecentActivity({
+        placeKey,
+        title: event.place_name || "Reseña temática",
+        badge: candidate ? "Episodio" : (fromArchive ? "Archivo" : "Guardada"),
+        meta: `Humor #${event.humor_score || 0} · Relevancia #${event.relevance_score || 0}`,
+        copy: candidate
+          ? `${event.observance || "Celebración"}: ${event.relevance_notes || "candidata relevante"}`
+          : (fromArchive
+            ? "La reseña del archivo no encaja con este episodio."
+            : "Es graciosa y queda disponible para otro episodio."),
+        href: placeDetailHref(event.place_id),
+      });
+    }
     if (event.event === "place_done") {
       progressState.processedSites += 1;
       const scores = Array.isArray(event.scores) ? event.scores : [];
@@ -650,7 +748,12 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
     if (event.event === "run_complete") {
       runFinished = true;
       setText("live-stage", "Completado");
-      setText("status", `Finalizado. Sitios: ${event.discovered}, reseñas nuevas: ${event.collected}`);
+      setText(
+        "status",
+        event.mode === "episode"
+          ? `Finalizado. Para el episodio: ${event.relevant || 0}/${event.target || 0}. Guardadas para otros: ${event.reusable || 0}.`
+          : `Finalizado. Sitios: ${event.discovered}, reseñas nuevas: ${event.collected}`,
+      );
       setText("live-count", String(progressState.collectedReviews));
       setText("live-sites", String(event.discovered ?? byId("live-sites")?.textContent ?? "0"));
       progressState.processedSites = Number(event.discovered ?? progressState.processedSites);
@@ -660,8 +763,12 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       pushLimited(progressState.recentActivity, {
         title: "Ejecución completada",
         badge: "Done",
-        meta: `${event.discovered || 0} sitios · ${event.collected || 0} reseñas`,
-        copy: "La ejecución terminó y ya no quedan sitios en cola.",
+        meta: event.mode === "episode"
+          ? `${event.relevant || 0}/${event.target || 0} candidatas · ${event.reusable || 0} reutilizables`
+          : `${event.discovered || 0} sitios · ${event.collected || 0} reseñas`,
+        copy: event.mode === "episode"
+          ? "La búsqueda temática terminó y todos los hallazgos graciosos quedaron guardados."
+          : "La ejecución terminó y ya no quedan sitios en cola.",
       });
       if (showTransientAlerts && Number(event.discovered || 0) === 0 && progressState.noResultsCount > 0) {
         const nameFilter = String(appConfig?.discovery?.name_contains || "").trim();
@@ -678,8 +785,10 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       pushLimited(progressState.recentActivity, {
         title: "Ejecución iniciada",
         badge: "Run",
-        meta: "Pipeline semanal",
-        copy: "Se ha puesto en marcha una nueva ejecución.",
+        meta: event.mode === "episode" ? `Episodio ${event.episode_date || ""}` : "Pipeline semanal",
+        copy: event.mode === "episode"
+          ? `Buscando ${event.target || 5} reseñas relevantes para el episodio.`
+          : "Se ha puesto en marcha una nueva ejecución.",
       });
     }
     if (event.event === "run_failed") {
@@ -869,6 +978,7 @@ function bindEvents() {
   byId("scoring_model")?.addEventListener("change", () => updateOpenAIExecutionControls({ resetDefaults: true }));
   byId("scoring_reasoning_effort")?.addEventListener("change", updateOpenAIExecutionControls);
   byId("run-weekly")?.addEventListener("click", runWeekly);
+  byId("run-episode")?.addEventListener("click", runEpisodeSearch);
   byId("run-dry")?.addEventListener("click", runDryRun);
   byId("import-review-button")?.addEventListener("click", importReview);
   byId("clear-import-images")?.addEventListener("click", clearImportedImages);

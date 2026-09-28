@@ -31,6 +31,34 @@
       <main>
         <section class="view active">
           <div class="run-dashboard">
+            <section class="card app-card episode-run-panel">
+              <div class="run-card-head">
+                <div>
+                  <div class="run-section-label">Próximo episodio</div>
+                  <h3>Búsqueda por celebraciones</h3>
+                </div>
+                <button id="run-episode">Buscar para el episodio</button>
+              </div>
+              <div class="compact-form-grid episode-run-fields">
+                <div>
+                  <label for="episode-date">Fecha de emisión</label>
+                  <input id="episode-date" type="date" />
+                </div>
+                <div>
+                  <label for="episode-target">Reseñas objetivo</label>
+                  <input id="episode-target" type="number" min="1" max="20" value="5" />
+                </div>
+                <div>
+                  <label for="episode-humor-threshold">Umbral de humor</label>
+                  <input id="episode-humor-threshold" type="number" min="0" max="100" value="60" />
+                </div>
+                <div>
+                  <label for="episode-relevance-threshold">Umbral de relevancia</label>
+                  <input id="episode-relevance-threshold" type="number" min="0" max="100" value="60" />
+                </div>
+              </div>
+              <div class="episode-observances" id="episode-observances"></div>
+            </section>
             <section class="card app-card app-card-accent run-hero">
               <div class="run-hero-top">
                 <div>
@@ -54,8 +82,16 @@
                   <strong id="live-count">0</strong>
                 </div>
                 <div class="run-kpi-card">
-                  <span class="run-kpi-label">Buenas candidatas</span>
+                  <span class="run-kpi-label">Reseñas graciosas</span>
                   <strong id="live-above-threshold">0</strong>
+                </div>
+                <div class="run-kpi-card">
+                  <span class="run-kpi-label">Para este episodio</span>
+                  <strong id="live-episode-candidates">0</strong>
+                </div>
+                <div class="run-kpi-card">
+                  <span class="run-kpi-label">Para otros episodios</span>
+                  <strong id="live-reusable">0</strong>
                 </div>
               </div>
             </section>

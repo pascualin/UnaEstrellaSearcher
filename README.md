@@ -209,6 +209,27 @@ PYTHONPATH=. .venv/bin/python -m humor_reviews.run themed-celebrations \
   --max-reviews-per-place 10
 ```
 
+### Buscar reseñas para un episodio por fecha
+
+El flujo consulta las celebraciones de la fecha en
+[Día Internacional de](https://www.diainternacionalde.com/), revisa primero las
+reseñas graciosas ya archivadas y amplía la búsqueda en Google Maps hasta reunir
+las candidatas relevantes solicitadas o agotar los límites de búsqueda.
+
+```bash
+PYTHONPATH=. .venv/bin/python -m humor_reviews.run episode-search \
+  --date 2026-09-13 \
+  --target 5 \
+  --humor-threshold 60 \
+  --relevance-threshold 60
+```
+
+La relevancia se guarda por ejecución y celebración. Una reseña que supere el
+umbral de humor pero no el de relevancia permanece pendiente en la base de datos
+para poder utilizarla en otro episodio. La planificación y la relevancia usan
+`OPENAI_API_KEY`; opcionalmente se puede elegir su modelo mediante
+`OPENAI_PLANNING_MODEL`.
+
 ## Interfaz web local
 
 Lanza la UI con:

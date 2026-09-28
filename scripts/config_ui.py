@@ -9,9 +9,10 @@ import os
 import re
 import socket
 import sqlite3
+import sys
 import threading
 import time
-from datetime import datetime
+from datetime import date, datetime
 from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -2130,6 +2131,78 @@ class Handler(BaseHTTPRequestHandler):
 
             threading.Thread(target=_runner, daemon=True).start()
             self._send(202, b"started", "text/plain; charset=utf-8")
+            return
+        if self.path == "/api/run-episode":
+            import subprocess
+
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            episode_date = str(payload.get("date") or "").strip()
+            try:
+                date.fromisoformat(episode_date)
+                target = max(1, min(20, int(payload.get("target") or 5)))
+                humor_threshold = max(0, min(100, int(payload.get("humor_threshold") or 60)))
+                relevance_threshold = max(
+                    0, min(100, int(payload.get("relevance_threshold") or 60))
+                )
+            except (TypeError, ValueError):
+                self._send(
+                    400,
+                    json.dumps({"ok": False, "message": "Fecha o umbrales no válidos."}).encode(
+                        "utf-8"
+                    ),
+                    "application/json",
+                )
+                return
+
+            log_path = _progress_log_path()
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text("", encoding="utf-8")
+
+            def _episode_runner() -> None:
+                env = os.environ.copy()
+                env["PROGRESS_LOG"] = str(log_path)
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "humor_reviews.run",
+                        "episode-search",
+                        "--date",
+                        episode_date,
+                        "--target",
+                        str(target),
+                        "--humor-threshold",
+                        str(humor_threshold),
+                        "--relevance-threshold",
+                        str(relevance_threshold),
+                    ],
+                    cwd=str(ROOT),
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                if result.stdout:
+                    _append_progress_log(
+                        log_path, "process_output", {"stream": "stdout", "text": result.stdout}
+                    )
+                if result.stderr:
+                    _append_progress_log(
+                        log_path, "process_output", {"stream": "stderr", "text": result.stderr}
+                    )
+                if result.returncode != 0:
+                    _append_progress_log(
+                        log_path,
+                        "run_failed",
+                        {"returncode": result.returncode},
+                    )
+
+            threading.Thread(target=_episode_runner, daemon=True).start()
+            self._send(
+                202,
+                json.dumps({"ok": True, "date": episode_date, "target": target}).encode("utf-8"),
+                "application/json",
+            )
             return
         if self.path == "/api/run-dry-run":
             import subprocess

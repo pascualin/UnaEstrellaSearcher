@@ -210,7 +210,7 @@ main {
       font-family: "Fraunces", serif;
     }
     label { display: block; font-weight: 600; margin: 10px 0 6px; color: var(--muted); }
-    input[type="text"], input[type="number"], textarea, select {
+    input[type="text"], input[type="date"], input[type="number"], textarea, select {
       width: 100%;
       padding: 10px 12px;
       border-radius: 12px;
@@ -514,6 +514,7 @@ main {
   line-height: 1.35;
 }
 .app-page input[type="text"],
+.app-page input[type="date"],
 .app-page input[type="number"],
 .app-page textarea,
 .app-page select {
@@ -679,6 +680,18 @@ main {
   display: grid;
   gap: 14px;
 }
+.app-page .episode-run-panel {
+  display: grid;
+  gap: 12px;
+}
+.app-page .episode-run-fields {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.app-page .episode-observances {
+  min-height: 20px;
+  color: #52606a;
+  font-size: 13px;
+}
 .app-page .run-hero {
   padding: 18px;
 }
@@ -723,7 +736,7 @@ main {
   gap: 10px;
 }
 .app-page .run-kpi-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 .app-page .run-metric-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -869,6 +882,9 @@ main {
   .app-page .compact-form-grid--split {
     grid-template-columns: 1fr;
   }
+  .app-page .episode-run-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 @media (max-width: 720px) {
   .app-page .meta-stack {
@@ -884,6 +900,17 @@ main {
   .app-page .run-focus-grid,
   .app-page .run-column-layout {
     grid-template-columns: 1fr;
+  }
+  .app-page .episode-run-fields {
+    grid-template-columns: 1fr;
+  }
+  .app-page .episode-run-panel .run-card-head {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .app-page .episode-run-panel .run-card-head button {
+    width: 100%;
   }
 }
 a { color: var(--accent); text-decoration: none; }
