@@ -23,6 +23,8 @@ const progressState = {
   collectedReviews: 0,
   aboveThreshold: 0,
   episodeCandidates: 0,
+  newEpisodeCandidates: 0,
+  archivedEpisodeCandidates: 0,
   reusableFinds: 0,
   processedSites: 0,
   startedAtMs: 0,
@@ -441,6 +443,8 @@ function resetLiveProgress() {
   progressState.collectedReviews = 0;
   progressState.aboveThreshold = 0;
   progressState.episodeCandidates = 0;
+  progressState.newEpisodeCandidates = 0;
+  progressState.archivedEpisodeCandidates = 0;
   progressState.reusableFinds = 0;
   progressState.processedSites = 0;
   progressState.startedAtMs = Date.now();
@@ -606,7 +610,7 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       setText(
         "status",
         progressState.archivedTotal
-          ? `Revisando ${progressState.archivedTotal} reseñas graciosas ya guardadas antes de buscar sitios nuevos.`
+          ? `Buscando hasta ${event.target || 5} candidatas antiguas entre ${progressState.archivedTotal} reseñas guardadas.`
           : "No hay reseñas guardadas que revisar. Preparando búsquedas nuevas.",
       );
     }
@@ -698,8 +702,17 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       const numericHumorScore = Number(event.humor_score || 0);
       const reviewerName = String(event.reviewer_name || "").trim();
       if (candidate) {
+        if (fromArchive) {
+          progressState.archivedEpisodeCandidates += 1;
+        } else {
+          progressState.newEpisodeCandidates += 1;
+        }
         progressState.episodeCandidates += 1;
         setText("live-episode-candidates", String(progressState.episodeCandidates));
+        setText(
+          "status",
+          `Candidatas: ${progressState.newEpisodeCandidates} nuevas · ${progressState.archivedEpisodeCandidates} antiguas.`,
+        );
       } else if (!fromArchive) {
         progressState.reusableFinds += 1;
         setText("live-reusable", String(progressState.reusableFinds));
@@ -739,7 +752,9 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       upsertRecentActivity({
         placeKey,
         title: event.place_name || "Reseña temática",
-        badge: candidate ? "Episodio" : (fromArchive ? "Archivo" : "Guardada"),
+        badge: candidate
+          ? (fromArchive ? "Antigua" : "Nueva")
+          : (fromArchive ? "Archivo" : "Guardada"),
         meta: `Humor #${event.humor_score || 0} · Relevancia #${event.relevance_score || 0}`,
         copy: candidate
           ? `${event.observance || "Celebración"}: ${event.relevance_notes || "candidata relevante"}`
@@ -814,7 +829,7 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       setText(
         "status",
         event.mode === "episode"
-          ? `Finalizado. Para el episodio: ${event.relevant || 0}/${event.target || 0}. Guardadas para otros: ${event.reusable || 0}.`
+          ? `Finalizado. Nuevas: ${event.new_relevant || 0}/${event.target || 0}. Antiguas: ${event.archived_relevant || 0}/${event.archive_target || event.target || 0}. Total: ${event.relevant || 0}. Guardadas para otros: ${event.reusable || 0}.`
           : `Finalizado. Sitios: ${event.discovered}, reseñas nuevas: ${event.collected}`,
       );
       setText("live-count", String(progressState.collectedReviews));
@@ -830,7 +845,7 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         title: "Ejecución completada",
         badge: "Done",
         meta: event.mode === "episode"
-          ? `${event.relevant || 0}/${event.target || 0} candidatas · ${event.reusable || 0} reutilizables`
+          ? `${event.new_relevant || 0}/${event.target || 0} nuevas · ${event.archived_relevant || 0} antiguas · ${event.reusable || 0} reutilizables`
           : `${event.discovered || 0} sitios · ${event.collected || 0} reseñas`,
         copy: event.mode === "episode"
           ? "La búsqueda temática terminó y todos los hallazgos graciosos quedaron guardados."
@@ -854,7 +869,7 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         badge: "Run",
         meta: event.mode === "episode" ? `Episodio ${event.episode_date || ""}` : "Pipeline semanal",
         copy: event.mode === "episode"
-          ? `Buscando ${event.target || 5} reseñas relevantes para el episodio.`
+          ? `Buscando ${event.target || 5} reseñas nuevas y hasta ${event.archive_target || event.target || 5} antiguas relevantes.`
           : "Se ha puesto en marcha una nueva ejecución.",
       });
     }

@@ -213,8 +213,10 @@ PYTHONPATH=. .venv/bin/python -m humor_reviews.run themed-celebrations \
 
 El flujo consulta las celebraciones de la fecha en
 [Día Internacional de](https://www.diainternacionalde.com/), revisa primero las
-reseñas graciosas ya archivadas y amplía la búsqueda en Google Maps hasta reunir
-las candidatas relevantes solicitadas o agotar los límites de búsqueda.
+reseñas graciosas ya archivadas y después busca en Google Maps hasta reunir el
+objetivo de reseñas nuevas o agotar los límites de búsqueda. El archivo aporta
+un cupo adicional del mismo tamaño, pero sus coincidencias nunca sustituyen a
+las nuevas: con `--target 5` puede devolver hasta 5 nuevas y 5 antiguas.
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m humor_reviews.run episode-search \

@@ -288,16 +288,22 @@ class CelebrationStrategyTests(unittest.TestCase):
 
 class EpisodeSearchTests(unittest.TestCase):
     @patch("humor_reviews.run._emit_progress")
+    @patch("humor_reviews.run.assess_safety")
+    @patch("humor_reviews.run.score_review")
     @patch("humor_reviews.run.score_celebration_relevance")
+    @patch("humor_reviews.run.collect_reviews")
     @patch("humor_reviews.run.discover_places_for_queries")
     @patch("humor_reviews.run.build_celebration_strategy_from_text")
     @patch("humor_reviews.run.fetch_observances")
-    def test_archive_is_checked_before_external_searches(
+    def test_archive_candidates_do_not_replace_new_review_target(
         self,
         fetch_calendar: Mock,
         build_strategy: Mock,
         discover: Mock,
+        collect: Mock,
         relevance: Mock,
+        humor: Mock,
+        safety: Mock,
         _emit: Mock,
     ) -> None:
         fetch_calendar.return_value = [
@@ -310,6 +316,25 @@ class EpisodeSearchTests(unittest.TestCase):
             [SearchPlan("chocolatería", "Madrid", "Relacionado")],
         )
         relevance.return_value = RelevanceResult(95, "Día del Chocolate", "Encaja.")
+        humor.return_value = HumorResult(90, "buena", ["absurdo"], "")
+        safety.return_value = SafetyResult("safe", "")
+        new_place = Place(
+            "place-new", "data-new", "Chocolatería Nueva", "Madrid", "shop", 10, None, "test"
+        )
+        discover.return_value = [DiscoveredPlace(new_place)]
+        collect.return_value = [
+            RawReview(
+                "new-review",
+                "data-new",
+                1,
+                "hoy",
+                "Autor nuevo",
+                "",
+                "Chocolate nuevo muy gracioso",
+                "",
+                "url-new",
+            )
+        ]
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -342,6 +367,25 @@ class EpisodeSearchTests(unittest.TestCase):
                     "absurdo",
                 )
             )
+            storage.upsert_review(
+                Review(
+                    "archived-extra",
+                    "data-1",
+                    1,
+                    "ayer",
+                    "Otro autor",
+                    "",
+                    "Más chocolate gracioso",
+                    "",
+                    "",
+                    "url-extra",
+                    89,
+                    "buena",
+                    "safe",
+                    "",
+                    "absurdo",
+                )
+            )
             run_episode_search(
                 storage,
                 settings,
@@ -355,12 +399,29 @@ class EpisodeSearchTests(unittest.TestCase):
                 40,
             )
             with sqlite3.connect(storage.db_path) as conn:
-                match = conn.execute(
-                    "SELECT review_id, is_episode_candidate, source FROM celebration_review_matches"
-                ).fetchone()
+                matches = conn.execute(
+                    """
+                    SELECT review_id, is_episode_candidate, source
+                    FROM celebration_review_matches ORDER BY source, review_id
+                    """
+                ).fetchall()
+                relevant_count = conn.execute(
+                    "SELECT relevant_count FROM celebration_runs"
+                ).fetchone()[0]
 
-        discover.assert_not_called()
-        self.assertEqual(match, ("archived", 1, "archive"))
+        discover.assert_called_once()
+        self.assertEqual(
+            matches,
+            [("archived", 1, "archive"), ("new-review", 1, "search")],
+        )
+        self.assertEqual(relevant_count, 2)
+        complete_event = next(
+            call.args[1]
+            for call in _emit.call_args_list
+            if call.args[0] == "run_complete"
+        )
+        self.assertEqual(complete_event["new_relevant"], 1)
+        self.assertEqual(complete_event["archived_relevant"], 1)
 
     @patch("humor_reviews.run._emit_progress")
     @patch("humor_reviews.run.assess_safety")

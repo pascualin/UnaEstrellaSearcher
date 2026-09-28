@@ -372,7 +372,12 @@ def run_episode_search(
     cache_dir = settings.app.data_dir / "api_cache"
     _emit_progress(
         "run_started",
-        {"mode": "episode", "episode_date": episode_date.isoformat(), "target": target_reviews},
+        {
+            "mode": "episode",
+            "episode_date": episode_date.isoformat(),
+            "target": target_reviews,
+            "archive_target": target_reviews,
+        },
     )
     observances = fetch_observances(episode_date, cache_dir)
     _emit_progress(
@@ -412,7 +417,8 @@ def run_episode_search(
     )
 
     matches: list[dict[str, object]] = []
-    relevant_review_ids: set[str] = set()
+    archived_relevant_review_ids: set[str] = set()
+    new_relevant_review_ids: set[str] = set()
     place_map = storage.get_place_map()
     if selected_observances:
         archived = [
@@ -441,6 +447,7 @@ def run_episode_search(
             {
                 "total": len(ranked_archived),
                 "semantic_limit": max_semantic_checks,
+                "target": target_reviews,
             },
         )
         for checked_count, (_, _, review, place, local_relevance) in enumerate(
@@ -458,7 +465,7 @@ def run_episode_search(
                 semantic_checks += 1
             candidate = relevance.score >= relevance_threshold
             if candidate:
-                relevant_review_ids.add(review.review_id)
+                archived_relevant_review_ids.add(review.review_id)
             matches.append(_theme_match(review.review_id, relevance, candidate, "archive"))
             _emit_theme_review(review, place, relevance, candidate, "archive")
             _emit_progress(
@@ -469,7 +476,7 @@ def run_episode_search(
                     "semantic_checks": semantic_checks,
                 },
             )
-            if len(relevant_review_ids) >= target_reviews:
+            if len(archived_relevant_review_ids) >= target_reviews:
                 break
 
     discovered_count = 0
@@ -480,7 +487,7 @@ def run_episode_search(
     themed_discovery = replace(settings.discovery, name_contains="")
 
     for search in strategy.searches[:max_searches]:
-        if len(relevant_review_ids) >= target_reviews or discovered_count >= max_places:
+        if len(new_relevant_review_ids) >= target_reviews or discovered_count >= max_places:
             break
         query = SearchQuery(query=search.query, region=search.region, category="themed_day")
         for discovered in discover_places_for_queries(
@@ -489,7 +496,7 @@ def run_episode_search(
             settings.providers,
             cache_dir,
         ):
-            if len(relevant_review_ids) >= target_reviews or discovered_count >= max_places:
+            if len(new_relevant_review_ids) >= target_reviews or discovered_count >= max_places:
                 break
             place_key = discovered.place.data_id or discovered.place.place_id
             if place_key in seen_places:
@@ -522,7 +529,7 @@ def run_episode_search(
                     max_reviews_per_place,
                     cache_dir,
                 ):
-                    if len(relevant_review_ids) >= target_reviews:
+                    if len(new_relevant_review_ids) >= target_reviews:
                         break
                     if not (raw.text or "").strip() or raw.rating > 2:
                         continue
@@ -575,7 +582,7 @@ def run_episode_search(
                     )
                     candidate = relevance.score >= relevance_threshold
                     if candidate:
-                        relevant_review_ids.add(review.review_id)
+                        new_relevant_review_ids.add(review.review_id)
                     else:
                         reusable_count += 1
                     matches.append(_theme_match(review.review_id, relevance, candidate, "search"))
@@ -699,7 +706,15 @@ def _finish_episode_run(
     funny_count: int,
     reusable_count: int,
 ) -> None:
-    relevant_count = sum(bool(match["is_episode_candidate"]) for match in matches)
+    archived_relevant_count = sum(
+        bool(match["is_episode_candidate"]) and match["source"] == "archive"
+        for match in matches
+    )
+    new_relevant_count = sum(
+        bool(match["is_episode_candidate"]) and match["source"] != "archive"
+        for match in matches
+    )
+    relevant_count = archived_relevant_count + new_relevant_count
     run_id = storage.record_celebration_run(
         year=episode_date.year,
         month=episode_date.month,
@@ -725,13 +740,17 @@ def _finish_episode_run(
             "discovered": discovered_count,
             "collected": collected_count,
             "relevant": relevant_count,
+            "new_relevant": new_relevant_count,
+            "archived_relevant": archived_relevant_count,
             "reusable": reusable_count,
             "target": target_reviews,
+            "archive_target": target_reviews,
         },
     )
     print(
         "Episode search completed: "
-        f"date={episode_date.isoformat()}, relevant={relevant_count}/{target_reviews}, "
+        f"date={episode_date.isoformat()}, new={new_relevant_count}/{target_reviews}, "
+        f"archived={archived_relevant_count}/{target_reviews}, total={relevant_count}, "
         f"reusable={reusable_count}, discovered={discovered_count}, collected={collected_count}"
     )
 
