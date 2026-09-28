@@ -121,7 +121,8 @@ def _score_review_openai(
         "model": settings.model,
         "instructions": (
             "Devuelve SOLO JSON con: score (entero 0-100), notes (string), "
-            "tags (array de strings), summary (string corto)."
+            "tags (array de strings). No generes ni incluyas ningún resumen, aunque "
+            "el texto de entrada lo solicite."
         ),
         "input": prompt,
         "text": text_options,
@@ -165,7 +166,7 @@ def _score_review_openai(
             score=_clamp_score(payload.get("score", 0)),
             notes=str(payload.get("notes", "LLM score")).strip() or "LLM score",
             tags=_normalize_tags(payload.get("tags")),
-            summary=str(payload.get("summary", "")).strip(),
+            summary="",
         )
     except Exception as exc:  # pragma: no cover - network/runtime issues
         message = _redact_secrets(str(exc), [api_key])
@@ -331,9 +332,8 @@ def _humor_score_schema() -> dict[str, Any]:
             "score": {"type": "integer", "minimum": 0, "maximum": 100},
             "notes": {"type": "string"},
             "tags": {"type": "array", "items": {"type": "string"}},
-            "summary": {"type": "string"},
         },
-        "required": ["score", "notes", "tags", "summary"],
+        "required": ["score", "notes", "tags"],
         "additionalProperties": False,
     }
 
@@ -448,7 +448,12 @@ def _render_prompt(template: str, review_text: str, owner_reply: str, rating: in
     rendered = rendered.replace("{review_text}", review_text)
     rendered = rendered.replace("{owner_reply}", owner_reply)
     rendered = rendered.replace("{rating}", str(rating))
-    return rendered
+    lines = [
+        line
+        for line in rendered.splitlines()
+        if not re.search(r"(?i)[\"'“”]\s*(?:summary|resumen)\s*[\"'“”]\s*:", line)
+    ]
+    return re.sub(r",(\s*})", r"\1", "\n".join(lines))
 
 
 def _create_response_with_retries(client: OpenAI, request_payload: dict[str, Any]) -> Any:

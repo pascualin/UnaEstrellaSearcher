@@ -28,7 +28,7 @@ from humor_reviews.openai_models import openai_model_catalog
 from humor_reviews.safety import assess_safety
 from humor_reviews.settings import load_settings
 from humor_reviews.storage import Place, Review, Storage
-from humor_reviews.translation import translate_review_to_spanish
+from humor_reviews.translation import translate_review_to_spanish, translate_reviews_to_spanish
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -384,6 +384,62 @@ def _fetch_db_snapshot(sort_by: str, status_filter: str) -> Dict[str, Any]:
     }
 
 
+def _place_review_translations(
+    review_rows: list[sqlite3.Row],
+) -> dict[str, tuple[str, str, str, str]]:
+    translations: dict[str, tuple[str, str, str, str]] = {}
+    pending: list[dict[str, str]] = []
+    for row in review_rows:
+        review_id = str(row["review_id"] or "")
+        review_text = str(row["text"] or "").strip()
+        translated_text = str(row["translated_text"] or "").strip()
+        review_language = str(row["original_text_language"] or "").strip().lower()
+        owner_reply_text, _ = _split_owner_reply(str(row["owner_reply"] or ""))
+        translated_owner_reply = str(row["translated_owner_reply"] or "").strip()
+        owner_reply_language = str(row["original_owner_reply_language"] or "").strip().lower()
+        if (
+            translated_text
+            and review_language
+            and (not owner_reply_text or (translated_owner_reply and owner_reply_language))
+        ):
+            translations[review_id] = (
+                translated_text,
+                translated_owner_reply,
+                review_language,
+                owner_reply_language,
+            )
+            continue
+        pending.append(
+            {
+                "review_id": review_id,
+                "review_text": review_text,
+                "owner_reply_text": owner_reply_text,
+            }
+        )
+
+    if not pending:
+        return translations
+
+    translated = translate_reviews_to_spanish(pending)
+    with sqlite3.connect(_db_path()) as conn:
+        _ensure_review_columns(conn)
+        for item in pending:
+            review_id = item["review_id"]
+            result = translated.get(review_id)
+            review_text_es = str(result.review_text_es if result else item["review_text"]).strip()
+            owner_reply_es = str(result.owner_reply_es if result else item["owner_reply_text"]).strip()
+            review_language = str(result.review_language if result else "").strip().lower()
+            owner_reply_language = str(result.owner_reply_language if result else "").strip().lower()
+            translations[review_id] = (
+                review_text_es or item["review_text"],
+                owner_reply_es or item["owner_reply_text"],
+                review_language,
+                owner_reply_language,
+            )
+            _store_review_translation(conn, review_id, *translations[review_id])
+    return translations
+
+
 def _fetch_place_detail(place_id: str) -> Dict[str, Any] | None:
     db_path = _db_path()
     if not db_path.exists():
@@ -415,7 +471,7 @@ def _fetch_place_detail(place_id: str) -> Dict[str, Any] | None:
         review_rows = conn.execute(
             f"""
             SELECT review_id, rating, date, reviewer_name, reviewer_profile_url,
-                   text, translated_text, original_text_language, summary,
+                   text, translated_text, original_text_language,
                    owner_reply, translated_owner_reply, original_owner_reply_language,
                    review_url, submitted_by, humor_score, humor_notes, safety_label,
                    safety_notes, tags, status, updated_at
@@ -428,6 +484,7 @@ def _fetch_place_detail(place_id: str) -> Dict[str, Any] | None:
     if not review_rows:
         return None
 
+    translations = _place_review_translations(review_rows)
     reviews: list[dict[str, Any]] = []
     for row in review_rows:
         reviewer_name = str(row["reviewer_name"] or "Anónimo").strip() or "Anónimo"
@@ -437,6 +494,9 @@ def _fetch_place_detail(place_id: str) -> Dict[str, Any] | None:
             if parsed:
                 reviewer_name, reviewer_url = parsed
         owner_reply_text, owner_reply_date = _split_owner_reply(str(row["owner_reply"] or ""))
+        translated_text, translated_owner_reply, review_language, owner_reply_language = translations[
+            str(row["review_id"] or "")
+        ]
         reviews.append(
             {
                 "review_id": row["review_id"],
@@ -444,11 +504,10 @@ def _fetch_place_detail(place_id: str) -> Dict[str, Any] | None:
                 "date": row["date"] or "",
                 "reviewer_name": reviewer_name,
                 "reviewer_profile_url": reviewer_url,
-                "review_text": row["translated_text"] or row["text"] or "",
-                "review_language": row["original_text_language"] or "",
-                "summary": row["summary"] or "",
-                "owner_reply_text": row["translated_owner_reply"] or owner_reply_text,
-                "owner_reply_language": row["original_owner_reply_language"] or "",
+                "review_text": translated_text or row["text"] or "",
+                "review_language": review_language,
+                "owner_reply_text": translated_owner_reply or owner_reply_text,
+                "owner_reply_language": owner_reply_language,
                 "owner_reply_date": owner_reply_date,
                 "review_url": row["review_url"] or "",
                 "submitted_by": row["submitted_by"] or "",
@@ -617,7 +676,6 @@ def _render_review_detail(
             reviewer_raw, reviewer_url_raw = parsed
     reviewer = _esc(reviewer_raw)
     reviewer_url = _esc(reviewer_url_raw)
-    summary = _esc(row["summary"] or "")
     review_text = _esc(translated_review_text or row["text"] or "")
     owner_reply_raw = str(row["owner_reply"] or "").strip()
     owner_reply_text_raw, owner_reply_date_raw = _split_owner_reply(owner_reply_raw)
@@ -644,14 +702,6 @@ def _render_review_detail(
     place_avatar = _esc(_avatar_text(place_name_raw))
     reviewer_avatar = _esc(_avatar_text(reviewer_raw))
     rating_stars = _render_stars(int(row["rating"] or 0))
-    summary_html = ""
-    if summary and len(str(row["text"] or "")) >= 420:
-        summary_html = (
-            '<section class="gm-summary-card">'
-            '<h3>Resumen de la IA</h3>'
-            f'<div class="gm-summary-text">{summary}</div>'
-            "</section>"
-        )
     owner_reply_html = (
         '<section class="gm-owner-reply" id="owner-reply-card">'
         f'<h3>Respuesta del propietario{owner_reply_language_badge}</h3>'
@@ -698,7 +748,6 @@ def _render_review_detail(
         .replace("{{place_avatar}}", place_avatar)
         .replace("{{reviewer_avatar}}", reviewer_avatar)
         .replace("{{rating_stars}}", rating_stars)
-        .replace("{{summary_html}}", summary_html)
         .replace("{{review_text}}", review_text or "(sin texto)")
         .replace("{{review_language_badge}}", review_language_badge)
         .replace("{{owner_reply_html}}", owner_reply_html)

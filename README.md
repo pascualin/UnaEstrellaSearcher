@@ -136,7 +136,7 @@ scoring:
   api_key_env: TYPESAFE_API_KEY
 ```
 
-Jev usa el mismo texto de `prompt` como contexto de evaluación. Su respuesta `score` emplea once niveles ordenados (0–10), que el proyecto convierte a la escala 0–100. Jev también elige una etiqueta principal de humor. Como Jev devuelve decisiones estructuradas y no genera texto libre, deja vacío el resumen de la reseña y guarda la confianza del score en `humor_notes`.
+Jev usa el mismo texto de `prompt` como contexto de evaluación. Su respuesta `score` emplea once niveles ordenados (0–10), que el proyecto convierte a la escala 0–100. Jev también elige una etiqueta principal de humor y guarda la confianza del score en `humor_notes`. Ningún proveedor genera ya resúmenes de las reseñas.
 
 Puedes crear la clave y consultar los modelos disponibles en la [documentación oficial de TypeSafe](https://docs.typesafe.ai/) y en su endpoint `GET /v1/models`.
 

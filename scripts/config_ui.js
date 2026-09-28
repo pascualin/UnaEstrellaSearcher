@@ -37,7 +37,6 @@ const progressState = {
   productivePlaces: 0,
   recentActivity: [],
   topPlaces: [],
-  placeSummaries: [],
 };
 
 function setText(id, value) {
@@ -254,12 +253,6 @@ function placeDetailHref(placeId) {
   return `/place?id=${encodeURIComponent(value)}`;
 }
 
-function upsertPlaceSummary(item) {
-  progressState.placeSummaries = progressState.placeSummaries.filter((entry) => entry.placeKey !== item.placeKey);
-  progressState.placeSummaries.unshift(item);
-  progressState.placeSummaries = progressState.placeSummaries.slice(0, 8);
-}
-
 function renderList(containerId, items, emptyText, renderItem) {
   const container = byId(containerId);
   if (!container) return;
@@ -325,22 +318,6 @@ function renderLiveDashboard() {
     `,
   );
 
-  renderList(
-    "run-place-list",
-    progressState.placeSummaries,
-    "Verás aquí un resumen de cada sitio en cuanto termine de procesarse.",
-    (item) => `
-      <div class="run-live-item run-live-place-item">
-        <div class="run-live-item-head">
-          <div class="run-live-item-title">${item.href ? `<a href="${item.href}">${item.place}</a>` : item.place}</div>
-          <div class="run-live-item-score">${item.badge}</div>
-        </div>
-        <div class="run-live-item-meta">${item.meta}</div>
-        <div class="run-live-item-copy">${item.copy}</div>
-        ${item.href ? `<div><a class="run-live-link" href="${item.href}">Abrir sitio</a></div>` : ""}
-      </div>
-    `,
-  );
 }
 
 async function loadConfig() {
@@ -468,7 +445,6 @@ function resetLiveProgress() {
   progressState.productivePlaces = 0;
   progressState.recentActivity = [];
   progressState.topPlaces = [];
-  progressState.placeSummaries = [];
   setText("live-stage", "Iniciando");
   setText("live-sites", "0");
   setText("live-place", "-");
@@ -634,14 +610,6 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
           href: placeDetailHref(event.place_id),
         });
       }
-      upsertPlaceSummary({
-        placeKey,
-        place: event.place_name || event.place_id || "Sitio",
-        badge: topScore == null ? "Vacío" : `#${topScore}`,
-        meta: topScore == null ? "Sin nuevas reseñas útiles" : `Mejor puntuación #${topScore}`,
-        copy: scores.length ? `Se puntuaron ${scores.length} reseña(s) en este sitio.` : "No entraron reseñas nuevas en esta pasada.",
-        href: placeDetailHref(event.place_id),
-      });
       upsertRecentActivity({
         placeKey,
         title: event.place_name || event.place_id || "Sitio completado",
@@ -659,14 +627,6 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       setText("live-place", event.place_name || event.place_id || byId("live-place")?.textContent || "-");
       setText("status", `Falló la recogida en ${event.place_name || event.place_id || "un sitio"}.`);
       const placeKey = event.place_id || event.place_name || `failed-${progressState.processedSites}`;
-      upsertPlaceSummary({
-        placeKey,
-        place: event.place_name || event.place_id || "Sitio",
-        badge: "Error",
-        meta: "Fallo de recogida",
-        copy: String(event.error || "Error no especificado"),
-        href: placeDetailHref(event.place_id),
-      });
       upsertRecentActivity({
         placeKey,
         title: event.place_name || event.place_id || "Error en sitio",

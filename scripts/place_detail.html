@@ -104,7 +104,6 @@
       const reviewerUrl = safeUrl(review.reviewer_profile_url);
       const status = review.status || "";
       const ownerReply = String(review.owner_reply_text || "").trim();
-      const summary = String(review.summary || "").trim();
       const reviewLanguage = String(review.review_language || "").trim().toUpperCase();
       const ownerLanguage = String(review.owner_reply_language || "").trim().toUpperCase();
       const reviewer = escapeHtml(review.reviewer_name || "Anónimo");
@@ -119,7 +118,6 @@
             </div>
             <span class="place-review-status">${statusLabel(status)}</span>
           </div>
-          ${summary ? `<div class="place-review-summary"><strong>Resumen</strong>${escapeHtml(summary)}</div>` : ""}
           <div class="place-review-copy">
             <p>${escapeHtml(review.review_text || "(sin texto)")}</p>
             ${reviewLanguage && reviewLanguage !== "ES" ? `<span class="place-language-badge">Traducida de ${escapeHtml(reviewLanguage)}</span>` : ""}

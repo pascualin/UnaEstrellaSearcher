@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from humor_reviews.notion_sync import NotionPage, _build_place_children
 from humor_reviews.storage import Place, Review, Storage
+from humor_reviews.translation import TranslationResult
 from scripts import config_ui
 
 
@@ -109,6 +110,38 @@ class PlaceWorkflowTests(unittest.TestCase):
         self.assertEqual(detail["place"]["top_humor_score"], 91)
         self.assertEqual(detail["place"]["accepted_count"], 1)
         self.assertEqual(detail["place"]["pending_count"], 1)
+
+    @patch("scripts.config_ui.translate_reviews_to_spanish")
+    def test_place_detail_translates_and_stores_missing_review_text(self, translate_batch) -> None:
+        with sqlite3.connect(self.data_dir / "humor_reviews.db") as conn:
+            conn.execute(
+                """
+                UPDATE reviews
+                SET text='Very funny review', translated_text='', original_text_language=''
+                WHERE review_id='other'
+                """
+            )
+        translate_batch.return_value = {
+            "other": TranslationResult(
+                review_text_es="Reseña muy graciosa",
+                owner_reply_es="",
+                review_language="en",
+                owner_reply_language="",
+            )
+        }
+
+        detail = config_ui._fetch_place_detail("place-2")
+
+        self.assertIsNotNone(detail)
+        assert detail is not None
+        self.assertEqual(detail["reviews"][0]["review_text"], "Reseña muy graciosa")
+        self.assertEqual(detail["reviews"][0]["review_language"], "en")
+        translate_batch.assert_called_once()
+        with sqlite3.connect(self.data_dir / "humor_reviews.db") as conn:
+            stored = conn.execute(
+                "SELECT translated_text, original_text_language FROM reviews WHERE review_id='other'"
+            ).fetchone()
+        self.assertEqual(stored, ("Reseña muy graciosa", "en"))
 
     @patch("scripts.config_ui.sync_place_reviews_page")
     def test_export_sends_only_accepted_reviews_to_one_place_page(self, sync_page) -> None:
