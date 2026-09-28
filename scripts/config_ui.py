@@ -23,7 +23,7 @@ import yaml
 
 from humor_reviews.collect import _serpapi_reviews
 from humor_reviews.humor import score_review
-from humor_reviews.notion_sync import NotionSyncError, append_review_image, create_review_page
+from humor_reviews.notion_sync import NotionSyncError, append_review_image, sync_place_reviews_page
 from humor_reviews.openai_models import openai_model_catalog
 from humor_reviews.safety import assess_safety
 from humor_reviews.settings import load_settings
@@ -42,6 +42,7 @@ RUN_HTML_PATH = ROOT / "scripts" / "run_view.html"
 IMPORT_REVIEW_HTML_PATH = ROOT / "scripts" / "import_review_view.html"
 DB_HTML_PATH = ROOT / "scripts" / "db_view.html"
 REVIEW_HTML_PATH = ROOT / "scripts" / "review_detail.html"
+PLACE_HTML_PATH = ROOT / "scripts" / "place_detail.html"
 REVIEW_IMPORT_MAX_PAGES = 24
 REVIEW_IMPORT_SORT_ORDERS = [
     None,
@@ -219,6 +220,16 @@ def _ensure_review_columns(conn: sqlite3.Connection) -> None:
     _migrate_legacy_review_status(conn, columns)
 
 
+def _ensure_place_columns(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(places)").fetchall()}
+    if "notion_page_id" not in columns:
+        conn.execute("ALTER TABLE places ADD COLUMN notion_page_id TEXT")
+    if "notion_page_url" not in columns:
+        conn.execute("ALTER TABLE places ADD COLUMN notion_page_url TEXT")
+    if "notion_exported_at" not in columns:
+        conn.execute("ALTER TABLE places ADD COLUMN notion_exported_at TEXT")
+
+
 def _migrate_legacy_review_status(conn: sqlite3.Connection, columns: set[str] | None = None) -> None:
     if columns is None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()}
@@ -271,6 +282,19 @@ def _status_filter_sql(status_filter: str) -> tuple[str, tuple]:
     return "WHERE LOWER(COALESCE(r.status, '')) IN ('', 'new')", ()
 
 
+def _place_status_having(status_filter: str) -> str:
+    normalized = str(status_filter or "pending").strip().lower()
+    if normalized == "accepted":
+        values = "'accepted', 'aceptada', 'selected', 'used'"
+    elif normalized == "rejected":
+        values = "'rejected', 'rechazada', 'discarded'"
+    elif normalized == "all":
+        return ""
+    else:
+        values = "'', 'new'"
+    return f"HAVING SUM(CASE WHEN LOWER(COALESCE(r.status, '')) IN ({values}) THEN 1 ELSE 0 END) > 0"
+
+
 def _fetch_db_snapshot(sort_by: str, status_filter: str) -> Dict[str, Any]:
     db_path = _db_path()
     if not db_path.exists():
@@ -302,6 +326,7 @@ def _fetch_db_snapshot(sort_by: str, status_filter: str) -> Dict[str, Any]:
             """
         )
         _ensure_review_columns(conn)
+        _ensure_place_columns(conn)
 
     def _scalar(sql: str) -> int:
         rows = _rows(sql)
@@ -323,31 +348,138 @@ def _fetch_db_snapshot(sort_by: str, status_filter: str) -> Dict[str, Any]:
     summary["empty_reviews_skipped_last"] = _scalar(
         "SELECT count as count FROM ingest_stats WHERE event = 'empty_reviews_skipped' ORDER BY created_at DESC LIMIT 1"
     )
-    order_by = "r.updated_at DESC"
+    order_by = "updated_at DESC"
     if sort_by == "humor_score":
-        order_by = "r.humor_score DESC, r.updated_at DESC"
-    review_filter, review_params = _status_filter_sql(status_filter)
+        order_by = "top_humor_score DESC, updated_at DESC"
+    status_having = _place_status_having(status_filter)
 
-    reviews = _rows(
+    places = _rows(
         "SELECT "
-        "r.review_id, r.rating, r.date, r.humor_score, r.safety_label, r.status, r.updated_at, r.review_url, "
-        "p.name as place_name, p.address as place_locality "
+        "COALESCE(p.place_id, r.place_id) AS place_id, "
+        "COALESCE(p.name, 'Sitio') AS place_name, "
+        "COALESCE(p.address, '') AS place_address, "
+        "COALESCE(p.category, '') AS place_category, "
+        "COALESCE(p.place_url, '') AS place_url, "
+        "COALESCE(p.notion_page_url, '') AS notion_page_url, "
+        "COUNT(r.review_id) AS review_count, "
+        "MAX(COALESCE(r.humor_score, 0)) AS top_humor_score, "
+        "SUM(CASE WHEN LOWER(COALESCE(r.status, '')) IN ('', 'new') THEN 1 ELSE 0 END) AS pending_count, "
+        "SUM(CASE WHEN LOWER(COALESCE(r.status, '')) IN ('accepted', 'aceptada', 'selected', 'used') THEN 1 ELSE 0 END) AS accepted_count, "
+        "SUM(CASE WHEN LOWER(COALESCE(r.status, '')) IN ('rejected', 'rechazada', 'discarded') THEN 1 ELSE 0 END) AS rejected_count, "
+        "MAX(r.updated_at) AS updated_at "
         "FROM reviews r "
         "LEFT JOIN places p ON (p.place_id = r.place_id OR p.data_id = r.place_id) "
-        f"{review_filter} "
-        f"ORDER BY {order_by} LIMIT 200",
-        review_params,
+        "GROUP BY COALESCE(p.place_id, r.place_id), p.name, p.address, p.category, p.place_url, p.notion_page_url "
+        f"{status_having} "
+        f"ORDER BY {order_by} LIMIT 200"
     )
-    for row in reviews:
-        row["status_label"] = _status_label(row.get("status"))
     shortlist = _rows(
         "SELECT review_id, batch_date, score FROM shortlist ORDER BY batch_date DESC LIMIT 200"
     )
     return {
         "summary": summary,
-        "reviews": reviews,
+        "places": places,
+        "reviews": [],
         "shortlist": shortlist,
     }
+
+
+def _fetch_place_detail(place_id: str) -> Dict[str, Any] | None:
+    db_path = _db_path()
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_review_columns(conn)
+        _ensure_place_columns(conn)
+        place_row = conn.execute(
+            """
+            SELECT place_id, data_id, name, address, category, place_url,
+                   notion_page_id, notion_page_url, notion_exported_at
+            FROM places
+            WHERE place_id = ? OR data_id = ?
+            LIMIT 1
+            """,
+            (place_id, place_id),
+        ).fetchone()
+        review_place_ids = [place_id]
+        if place_row:
+            review_place_ids = [
+                value
+                for value in dict.fromkeys(
+                    [str(place_row["place_id"] or ""), str(place_row["data_id"] or "")]
+                )
+                if value
+            ]
+        placeholders = ", ".join("?" for _ in review_place_ids)
+        review_rows = conn.execute(
+            f"""
+            SELECT review_id, rating, date, reviewer_name, reviewer_profile_url,
+                   text, translated_text, original_text_language, summary,
+                   owner_reply, translated_owner_reply, original_owner_reply_language,
+                   review_url, submitted_by, humor_score, humor_notes, safety_label,
+                   safety_notes, tags, status, updated_at
+            FROM reviews
+            WHERE place_id IN ({placeholders})
+            ORDER BY COALESCE(humor_score, 0) DESC, updated_at DESC
+            """,
+            tuple(review_place_ids),
+        ).fetchall()
+    if not review_rows:
+        return None
+
+    reviews: list[dict[str, Any]] = []
+    for row in review_rows:
+        reviewer_name = str(row["reviewer_name"] or "Anónimo").strip() or "Anónimo"
+        reviewer_url = str(row["reviewer_profile_url"] or "").strip()
+        if reviewer_name.startswith("{"):
+            parsed = _parse_reviewer_payload(reviewer_name)
+            if parsed:
+                reviewer_name, reviewer_url = parsed
+        owner_reply_text, owner_reply_date = _split_owner_reply(str(row["owner_reply"] or ""))
+        reviews.append(
+            {
+                "review_id": row["review_id"],
+                "rating": row["rating"] or 0,
+                "date": row["date"] or "",
+                "reviewer_name": reviewer_name,
+                "reviewer_profile_url": reviewer_url,
+                "review_text": row["translated_text"] or row["text"] or "",
+                "review_language": row["original_text_language"] or "",
+                "summary": row["summary"] or "",
+                "owner_reply_text": row["translated_owner_reply"] or owner_reply_text,
+                "owner_reply_language": row["original_owner_reply_language"] or "",
+                "owner_reply_date": owner_reply_date,
+                "review_url": row["review_url"] or "",
+                "submitted_by": row["submitted_by"] or "",
+                "humor_score": row["humor_score"] or 0,
+                "humor_notes": row["humor_notes"] or "",
+                "safety_label": row["safety_label"] or "",
+                "safety_notes": row["safety_notes"] or "",
+                "tags": row["tags"] or "",
+                "status": _normalize_status(row["status"]),
+                "status_label": _status_label(row["status"]),
+                "updated_at": row["updated_at"] or "",
+            }
+        )
+
+    first_review = reviews[0]
+    place = {
+        "place_id": str((place_row["place_id"] if place_row else place_id) or place_id),
+        "place_name": str((place_row["name"] if place_row else "Sitio") or "Sitio"),
+        "place_address": str((place_row["address"] if place_row else "") or ""),
+        "place_category": str((place_row["category"] if place_row else "") or ""),
+        "place_url": str((place_row["place_url"] if place_row else first_review["review_url"]) or ""),
+        "notion_page_id": str((place_row["notion_page_id"] if place_row else "") or ""),
+        "notion_page_url": str((place_row["notion_page_url"] if place_row else "") or ""),
+        "notion_exported_at": str((place_row["notion_exported_at"] if place_row else "") or ""),
+        "review_count": len(reviews),
+        "accepted_count": sum(review["status"] == "accepted" for review in reviews),
+        "rejected_count": sum(review["status"] == "rejected" for review in reviews),
+        "pending_count": sum(not review["status"] for review in reviews),
+        "top_humor_score": first_review["humor_score"],
+    }
+    return {"place": place, "reviews": reviews}
 
 
 def _fetch_review_statuses(review_ids: List[str]) -> Dict[str, str]:
@@ -670,6 +802,73 @@ def _store_notion_page(review_id: str, page_id: str, page_url: str) -> None:
             "UPDATE reviews SET notion_page_id=?, notion_page_url=?, updated_at=? WHERE review_id=?",
             (page_id, page_url, now, review_id),
         )
+
+
+def _store_place_notion_page(
+    place_id: str,
+    page_id: str,
+    page_url: str,
+    review_ids: list[str],
+) -> None:
+    db_path = _db_path()
+    if not db_path.exists():
+        return
+    with sqlite3.connect(db_path) as conn:
+        _ensure_place_columns(conn)
+        _ensure_review_columns(conn)
+        now = datetime.utcnow().isoformat()
+        conn.execute(
+            """
+            UPDATE places
+            SET notion_page_id=?, notion_page_url=?, notion_exported_at=?
+            WHERE place_id=? OR data_id=?
+            """,
+            (page_id, page_url, now, place_id, place_id),
+        )
+        if review_ids:
+            placeholders = ", ".join("?" for _ in review_ids)
+            conn.execute(
+                f"UPDATE reviews SET notion_page_id=?, notion_page_url=? WHERE review_id IN ({placeholders})",
+                (page_id, page_url, *review_ids),
+            )
+
+
+def _export_place_to_notion(place_id: str) -> dict[str, Any]:
+    detail = _fetch_place_detail(place_id)
+    if not detail:
+        raise LookupError("Sitio no encontrado.")
+    place = detail["place"]
+    accepted_candidates = [
+        review for review in detail["reviews"] if review["status"] == "accepted"
+    ]
+    if not accepted_candidates:
+        raise ValueError("Acepta al menos una reseña antes de exportar.")
+    accepted_reviews = [
+        review
+        for candidate in accepted_candidates
+        if (review := _fetch_review_for_notion(str(candidate["review_id"]))) is not None
+    ]
+    page = sync_place_reviews_page(
+        place,
+        accepted_reviews,
+        page_id=str(place.get("notion_page_id") or ""),
+        page_url=str(place.get("notion_page_url") or ""),
+    )
+    _store_place_notion_page(
+        place_id,
+        page.page_id,
+        page.url,
+        [str(review["review_id"]) for review in accepted_reviews],
+    )
+    return {
+        "ok": True,
+        "notion_url": page.url,
+        "exported_reviews": len(accepted_reviews),
+        "message": (
+            f"Página de Notion actualizada con {len(accepted_reviews)} "
+            f"{'reseña' if len(accepted_reviews) == 1 else 'reseñas'} aceptadas."
+        ),
+    }
 
 
 def _store_notion_image_uploaded(review_id: str) -> None:
@@ -1551,6 +1750,23 @@ class Handler(BaseHTTPRequestHandler):
                 headers={"Cache-Control": "no-store"},
             )
             return
+        if self.path.startswith("/place"):
+            parsed = parse_qs(urlsplit(self.path).query)
+            place_id = (parsed.get("id") or [""])[0]
+            if not place_id:
+                self._send(400, b"Missing place id", "text/plain")
+                return
+            if _fetch_place_detail(place_id) is None:
+                self._send(404, b"Place not found", "text/plain")
+                return
+            html = _load_html(PLACE_HTML_PATH, "Missing place_detail.html")
+            self._send(
+                200,
+                html.encode("utf-8"),
+                "text/html; charset=utf-8",
+                headers={"Cache-Control": "no-store"},
+            )
+            return
         if self.path.startswith("/review"):
             review_id = ""
             sort_by = "updated_at"
@@ -1619,6 +1835,18 @@ class Handler(BaseHTTPRequestHandler):
                 if key == "status":
                     status_filter = value or "pending"
             payload = _fetch_db_snapshot(sort_by, status_filter)
+            self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
+            return
+        if self.path.startswith("/api/place-detail"):
+            parsed = parse_qs(urlsplit(self.path).query)
+            place_id = (parsed.get("id") or [""])[0]
+            if not place_id:
+                self._send(400, b"Missing place id", "text/plain")
+                return
+            payload = _fetch_place_detail(place_id)
+            if payload is None:
+                self._send(404, b"Place not found", "text/plain")
+                return
             self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
             return
         if self.path.startswith("/api/review-statuses"):
@@ -1773,31 +2001,31 @@ class Handler(BaseHTTPRequestHandler):
             if not _set_review_status(review_id, status):
                 self._send(404, b"review not found", "text/plain")
                 return
-            message = ""
-            notion_url = ""
-            if status == "accepted":
-                review = _fetch_review_for_notion(review_id)
-                if review:
-                    if review.get("notion_page_url"):
-                        notion_url = str(review["notion_page_url"])
-                        message = "Estado actualizado. La página de Notion ya existía."
-                    else:
-                        try:
-                            page = create_review_page(review)
-                            _store_notion_page(review_id, page.page_id, page.url)
-                            notion_url = page.url
-                            message = "Estado actualizado y página creada en Notion."
-                        except NotionSyncError as exc:
-                            message = f"Estado actualizado, pero Notion no se pudo sincronizar: {exc}"
-                else:
-                    message = "Estado actualizado."
-            else:
-                message = "Estado actualizado."
             self._send(
                 200,
-                json.dumps({"ok": True, "status": status, "message": message, "notion_url": notion_url}).encode("utf-8"),
+                json.dumps({"ok": True, "status": status, "message": "Estado actualizado."}).encode("utf-8"),
                 "application/json",
             )
+            return
+        if self.path == "/api/place-notion-export":
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            place_id = str(payload.get("place_id") or "").strip()
+            if not place_id:
+                self._send(400, b"missing place_id", "text/plain")
+                return
+            try:
+                result = _export_place_to_notion(place_id)
+            except LookupError as exc:
+                self._send(404, json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"), "application/json")
+                return
+            except ValueError as exc:
+                self._send(400, json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"), "application/json")
+                return
+            except NotionSyncError as exc:
+                self._send(502, json.dumps({"ok": False, "message": f"No se pudo sincronizar Notion: {exc}"}).encode("utf-8"), "application/json")
+                return
+            self._send(200, json.dumps(result).encode("utf-8"), "application/json")
             return
         if self.path == "/api/review-notion-image":
             length = int(self.headers.get("Content-Length", "0"))

@@ -63,7 +63,10 @@ class Storage:
                     total_reviews INTEGER,
                     last_review_date TEXT,
                     provider TEXT,
-                    place_url TEXT
+                    place_url TEXT,
+                    notion_page_id TEXT,
+                    notion_page_url TEXT,
+                    notion_exported_at TEXT
                 )
                 """
             )
@@ -136,6 +139,12 @@ class Storage:
             conn.execute("ALTER TABLE places ADD COLUMN data_id TEXT")
         if "place_url" not in columns:
             conn.execute("ALTER TABLE places ADD COLUMN place_url TEXT")
+        if "notion_page_id" not in columns:
+            conn.execute("ALTER TABLE places ADD COLUMN notion_page_id TEXT")
+        if "notion_page_url" not in columns:
+            conn.execute("ALTER TABLE places ADD COLUMN notion_page_url TEXT")
+        if "notion_exported_at" not in columns:
+            conn.execute("ALTER TABLE places ADD COLUMN notion_exported_at TEXT")
 
     def _ensure_review_columns(self, conn: sqlite3.Connection) -> None:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(reviews)").fetchall()}

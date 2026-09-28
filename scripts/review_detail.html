@@ -136,24 +136,6 @@
       }
     }
 
-    function ensureNotionLink(notionUrl) {
-      const url = String(notionUrl || "").trim();
-      if (!url || !placeLinks) return;
-      const existing = placeLinks.querySelector('a[data-link-kind="notion"]');
-      if (existing) {
-        existing.href = url;
-        return;
-      }
-      const link = document.createElement("a");
-      link.className = "gm-place-link";
-      link.href = url;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.dataset.linkKind = "notion";
-      link.textContent = "NOTION";
-      placeLinks.appendChild(link);
-    }
-
     async function updateStatus(nextStatus) {
       const reviewId = acceptToggle?.dataset.reviewId || rejectToggle?.dataset.reviewId || "";
       if (!reviewId) return;
@@ -179,19 +161,7 @@
         }
         syncStatusButtons();
         const payload = await res.json();
-        ensureNotionLink(payload.notion_url);
-        let message = payload.message || "Estado actualizado.";
-        if (nextStatus === "accepted" && payload.notion_url) {
-          try {
-            const imageMessage = await uploadReviewImageToNotion(reviewId);
-            if (imageMessage) {
-              message = `${message} ${imageMessage}`.trim();
-            }
-          } catch (error) {
-            message = `${message} ${error.message || "No se pudo subir la captura a Notion."}`.trim();
-          }
-        }
-        if (statusFeedback) statusFeedback.textContent = message;
+        if (statusFeedback) statusFeedback.textContent = payload.message || "Estado actualizado.";
       } catch (error) {
         if (statusFeedback) statusFeedback.textContent = "No se pudo conectar con la UI local.";
       } finally {
