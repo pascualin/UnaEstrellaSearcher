@@ -24,7 +24,7 @@ from humor_reviews.celebration_strategy import (
 from humor_reviews.collect import RawReview
 from humor_reviews.discover import DiscoveredPlace
 from humor_reviews.humor import HumorResult
-from humor_reviews.run import run_episode_search
+from humor_reviews.run import _episode_new_target_met, run_episode_search
 from humor_reviews.safety import SafetyResult
 from humor_reviews.settings import ScoringSettings, load_settings
 from humor_reviews.storage import Place, Review, Storage
@@ -273,6 +273,33 @@ class CelebrationStrategyTests(unittest.TestCase):
         )
 
     @patch("humor_reviews.celebration_strategy.OpenAI")
+    def test_local_strategy_discards_sensitive_observances(self, openai: Mock) -> None:
+        sensitive = "Día Internacional de las Víctimas de la Violencia"
+        strategy = build_celebration_strategy_from_text(
+            f"{sensitive}\nDía Internacional del Pulpo",
+            _settings("typesafe"),
+        )
+
+        openai.assert_not_called()
+        self.assertEqual(strategy.selected_observances, ["Día Internacional del Pulpo"])
+        self.assertEqual(strategy.discarded_observances, [sensitive])
+
+    @patch("humor_reviews.celebration_strategy.OpenAI")
+    def test_local_strategy_gives_each_observance_a_query_before_repeating(self, openai: Mock) -> None:
+        observances = [f"Día Internacional del Tema {index}" for index in range(1, 8)]
+        strategy = build_celebration_strategy_from_text(
+            "\n".join(observances),
+            _settings("typesafe"),
+        )
+
+        openai.assert_not_called()
+        first_round = strategy.searches[: len(observances)]
+        self.assertEqual(
+            {search.rationale for search in first_round},
+            {f"Búsqueda relacionada con {observance}." for observance in observances},
+        )
+
+    @patch("humor_reviews.celebration_strategy.OpenAI")
     def test_openai_quota_error_has_actionable_message(self, openai: Mock) -> None:
         openai.return_value.chat.completions.create.side_effect = RuntimeError(
             "credit_balance_exhausted"
@@ -287,6 +314,165 @@ class CelebrationStrategyTests(unittest.TestCase):
 
 
 class EpisodeSearchTests(unittest.TestCase):
+    def test_multiple_observances_require_three_new_reviews_each(self) -> None:
+        observances = ["Día del Pulpo", "Día de la Visión"]
+
+        self.assertFalse(
+            _episode_new_target_met(
+                {f"pulpo-{index}" for index in range(5)},
+                {"Día del Pulpo": 5, "Día de la Visión": 0},
+                observances,
+                5,
+            )
+        )
+        self.assertTrue(
+            _episode_new_target_met(
+                {f"review-{index}" for index in range(6)},
+                {"Día del Pulpo": 3, "Día de la Visión": 3},
+                observances,
+                5,
+            )
+        )
+
+    def test_global_target_still_applies_with_multiple_observances(self) -> None:
+        self.assertFalse(
+            _episode_new_target_met(
+                {f"review-{index}" for index in range(6)},
+                {"Día del Pulpo": 3, "Día de la Visión": 3},
+                ["Día del Pulpo", "Día de la Visión"],
+                10,
+            )
+        )
+
+    @patch("humor_reviews.run._emit_progress")
+    @patch("humor_reviews.run.assess_safety")
+    @patch("humor_reviews.run.score_review")
+    @patch("humor_reviews.run.score_celebration_relevance")
+    @patch("humor_reviews.run.collect_reviews")
+    @patch("humor_reviews.run.discover_places_for_queries")
+    @patch("humor_reviews.run.build_celebration_strategy_from_text")
+    @patch("humor_reviews.run.fetch_observances")
+    def test_episode_search_reaches_each_observance_quota(
+        self,
+        fetch_calendar: Mock,
+        build_strategy: Mock,
+        discover: Mock,
+        collect: Mock,
+        relevance: Mock,
+        humor: Mock,
+        safety: Mock,
+        emit: Mock,
+    ) -> None:
+        pulpo = "Día Internacional del Pulpo"
+        vision = "Día Mundial de la Visión"
+        fetch_calendar.return_value = [
+            Observance(pulpo, "2026-10-08", "https://example.com/pulpo"),
+            Observance(vision, "2026-10-08", "https://example.com/vision"),
+        ]
+        build_strategy.return_value = CelebrationStrategy(
+            [pulpo, vision],
+            [],
+            "",
+            [
+                SearchPlan("restaurante de pulpo", "Spain", "Pulpo"),
+                SearchPlan("óptica", "Spain", "Visión"),
+            ],
+        )
+        places = [
+            Place(
+                "pulpo-place",
+                "pulpo-data",
+                "Pulpería",
+                "Madrid",
+                "restaurant",
+                10,
+                None,
+                "test",
+            ),
+            Place(
+                "vision-place",
+                "vision-data",
+                "Óptica",
+                "Madrid",
+                "optician",
+                10,
+                None,
+                "test",
+            ),
+        ]
+        discover.side_effect = [[DiscoveredPlace(place)] for place in places]
+        collect.side_effect = [
+            [
+                RawReview(
+                    f"pulpo-{index}",
+                    "pulpo-data",
+                    1,
+                    "hoy",
+                    "A",
+                    "",
+                    "Pulpo",
+                    "",
+                    f"u-p-{index}",
+                )
+                for index in range(5)
+            ],
+            [
+                RawReview(
+                    f"vision-{index}",
+                    "vision-data",
+                    1,
+                    "hoy",
+                    "B",
+                    "",
+                    "Visión",
+                    "",
+                    f"u-v-{index}",
+                )
+                for index in range(3)
+            ],
+        ]
+        relevance.side_effect = [
+            *[RelevanceResult(90, pulpo, "Encaja") for _ in range(5)],
+            *[RelevanceResult(90, vision, "Encaja") for _ in range(3)],
+        ]
+        humor.return_value = HumorResult(90, "buena", ["absurdo"], "")
+        safety.return_value = SafetyResult("safe", "")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "config.yaml"
+            config_path.write_text(
+                f"app:\n  data_dir: {root / 'data'}\ndiscovery:\n  country: ES\nscoring: {{}}\nsafety: {{}}\n",
+                encoding="utf-8",
+            )
+            settings = load_settings(config_path)
+            storage = Storage(settings.app.data_dir / "humor_reviews.db")
+            run_episode_search(
+                storage,
+                settings,
+                episode_date=date(2026, 10, 8),
+                target_reviews=5,
+                humor_threshold=60,
+                relevance_threshold=60,
+                max_searches=2,
+                max_places=10,
+                max_reviews_per_place=10,
+                max_archived_candidates=0,
+            )
+
+        self.assertEqual(discover.call_count, 2)
+        complete_event = next(
+            call.args[1]
+            for call in emit.call_args_list
+            if call.args[0] == "run_complete"
+        )
+        self.assertEqual(complete_event["new_relevant"], 8)
+        self.assertEqual(
+            complete_event["new_relevant_by_observance"],
+            {pulpo: 5, vision: 3},
+        )
+        self.assertEqual(complete_event["per_observance_target"], 3)
+
     @patch("humor_reviews.run._emit_progress")
     @patch("humor_reviews.run.assess_safety")
     @patch("humor_reviews.run.score_review")

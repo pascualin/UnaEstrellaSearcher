@@ -216,7 +216,10 @@ El flujo consulta las celebraciones de la fecha en
 reseñas graciosas ya archivadas y después busca en Google Maps hasta reunir el
 objetivo de reseñas nuevas o agotar los límites de búsqueda. El archivo aporta
 un cupo adicional del mismo tamaño, pero sus coincidencias nunca sustituyen a
-las nuevas: con `--target 5` puede devolver hasta 5 nuevas y 5 antiguas.
+las nuevas: con `--target 5` puede devolver hasta 5 nuevas y 5 antiguas. Cuando
+hay varias celebraciones seleccionadas, el objetivo global se considera un
+mínimo y se buscan al menos 3 reseñas nuevas por celebración. Las celebraciones
+descartadas por sensibilidad o por no producir búsquedas útiles no generan cupo.
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m humor_reviews.run episode-search \

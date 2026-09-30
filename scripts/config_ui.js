@@ -44,6 +44,9 @@ const progressState = {
   failed: false,
   archivedChecked: 0,
   archivedTotal: 0,
+  selectedObservances: [],
+  perObservanceTarget: 0,
+  newCandidatesByObservance: {},
 };
 
 function setText(id, value) {
@@ -464,6 +467,9 @@ function resetLiveProgress() {
   progressState.failed = false;
   progressState.archivedChecked = 0;
   progressState.archivedTotal = 0;
+  progressState.selectedObservances = [];
+  progressState.perObservanceTarget = 0;
+  progressState.newCandidatesByObservance = {};
   setText("live-stage", "Iniciando");
   setText("live-sites", "0");
   setText("live-place", "-");
@@ -595,12 +601,19 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
     }
     if (event.event === "celebration_strategy") {
       const selected = Array.isArray(event.selected_observances) ? event.selected_observances : [];
+      progressState.selectedObservances = selected;
+      progressState.perObservanceTarget = Number(event.per_observance_target || 0);
+      progressState.newCandidatesByObservance = Object.fromEntries(
+        selected.map((observance) => [observance, 0]),
+      );
       setText("live-stage", "Planificando búsquedas");
       pushLimited(progressState.recentActivity, {
         title: "Estrategia temática",
         badge: `${event.search_count || 0} búsquedas`,
         meta: selected.join(" · "),
-        copy: "La estrategia está lista y comienza revisando el archivo existente.",
+        copy: progressState.perObservanceTarget
+          ? `La estrategia buscará al menos ${progressState.perObservanceTarget} reseñas nuevas por celebración seleccionada.`
+          : "La estrategia está lista y comienza revisando el archivo existente.",
       });
     }
     if (event.event === "archive_scan_started") {
@@ -706,12 +719,23 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
           progressState.archivedEpisodeCandidates += 1;
         } else {
           progressState.newEpisodeCandidates += 1;
+          const observance = String(event.observance || "");
+          if (Object.hasOwn(progressState.newCandidatesByObservance, observance)) {
+            progressState.newCandidatesByObservance[observance] += 1;
+          }
         }
         progressState.episodeCandidates += 1;
         setText("live-episode-candidates", String(progressState.episodeCandidates));
+        const observanceProgress = progressState.perObservanceTarget
+          ? progressState.selectedObservances
+            .map((observance) => `${observance}: ${progressState.newCandidatesByObservance[observance] || 0}/${progressState.perObservanceTarget}`)
+            .join(" · ")
+          : "";
         setText(
           "status",
-          `Candidatas: ${progressState.newEpisodeCandidates} nuevas · ${progressState.archivedEpisodeCandidates} antiguas.`,
+          observanceProgress
+            ? `Nuevas: ${progressState.newEpisodeCandidates}. ${observanceProgress}. Antiguas: ${progressState.archivedEpisodeCandidates}.`
+            : `Candidatas: ${progressState.newEpisodeCandidates} nuevas · ${progressState.archivedEpisodeCandidates} antiguas.`,
         );
       } else if (!fromArchive) {
         progressState.reusableFinds += 1;
@@ -826,10 +850,17 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
     if (event.event === "run_complete") {
       runFinished = true;
       setText("live-stage", "Completado");
+      const perObservanceTarget = Number(event.per_observance_target || 0);
+      const countsByObservance = event.new_relevant_by_observance || {};
+      const observanceSummary = perObservanceTarget
+        ? Object.entries(countsByObservance)
+          .map(([observance, count]) => `${observance}: ${count}/${perObservanceTarget}`)
+          .join(" · ")
+        : "";
       setText(
         "status",
         event.mode === "episode"
-          ? `Finalizado. Nuevas: ${event.new_relevant || 0}/${event.target || 0}. Antiguas: ${event.archived_relevant || 0}/${event.archive_target || event.target || 0}. Total: ${event.relevant || 0}. Guardadas para otros: ${event.reusable || 0}.`
+          ? `Finalizado. Nuevas: ${event.new_relevant || 0}/${event.target || 0}. ${observanceSummary ? `Por celebración: ${observanceSummary}. ` : ""}Antiguas: ${event.archived_relevant || 0}/${event.archive_target || event.target || 0}. Total: ${event.relevant || 0}. Guardadas para otros: ${event.reusable || 0}.`
           : `Finalizado. Sitios: ${event.discovered}, reseñas nuevas: ${event.collected}`,
       );
       setText("live-count", String(progressState.collectedReviews));
@@ -848,7 +879,7 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
           ? `${event.new_relevant || 0}/${event.target || 0} nuevas · ${event.archived_relevant || 0} antiguas · ${event.reusable || 0} reutilizables`
           : `${event.discovered || 0} sitios · ${event.collected || 0} reseñas`,
         copy: event.mode === "episode"
-          ? "La búsqueda temática terminó y todos los hallazgos graciosos quedaron guardados."
+          ? (observanceSummary || "La búsqueda temática terminó y todos los hallazgos graciosos quedaron guardados.")
           : "La ejecución terminó y ya no quedan sitios en cola.",
       });
       if (showTransientAlerts && Number(event.discovered || 0) === 0 && progressState.noResultsCount > 0) {

@@ -23,6 +23,9 @@ from .shortlist import build_shortlist, mark_shortlist
 from .storage import Place, Review, Storage
 
 
+MIN_NEW_REVIEWS_PER_OBSERVANCE = 3
+
+
 def run_discovery(storage: Storage, settings) -> tuple[int, list[str], dict[str, str]]:
     count = 0
     place_ids: list[str] = []
@@ -407,18 +410,24 @@ def run_episode_search(
     celebrations_text = "\n".join(item.name for item in observances)
     strategy = build_celebration_strategy_from_text(celebrations_text, settings.scoring)
     selected_observances = strategy.selected_observances
+    per_observance_target = (
+        MIN_NEW_REVIEWS_PER_OBSERVANCE if len(selected_observances) > 1 else 0
+    )
+    search_limit = max(max_searches, len(selected_observances))
     _emit_progress(
         "celebration_strategy",
         {
             "selected_observances": selected_observances,
             "discarded_observances": strategy.discarded_observances,
-            "search_count": min(len(strategy.searches), max_searches),
+            "search_count": min(len(strategy.searches), search_limit),
+            "per_observance_target": per_observance_target,
         },
     )
 
     matches: list[dict[str, object]] = []
     archived_relevant_review_ids: set[str] = set()
     new_relevant_review_ids: set[str] = set()
+    new_relevant_by_observance = {name: 0 for name in selected_observances}
     place_map = storage.get_place_map()
     if selected_observances:
         archived = [
@@ -486,8 +495,13 @@ def run_episode_search(
     seen_places: set[str] = set()
     themed_discovery = replace(settings.discovery, name_contains="")
 
-    for search in strategy.searches[:max_searches]:
-        if len(new_relevant_review_ids) >= target_reviews or discovered_count >= max_places:
+    for search in strategy.searches[:search_limit]:
+        if _episode_new_target_met(
+            new_relevant_review_ids,
+            new_relevant_by_observance,
+            selected_observances,
+            target_reviews,
+        ) or discovered_count >= max_places:
             break
         query = SearchQuery(query=search.query, region=search.region, category="themed_day")
         for discovered in discover_places_for_queries(
@@ -496,7 +510,12 @@ def run_episode_search(
             settings.providers,
             cache_dir,
         ):
-            if len(new_relevant_review_ids) >= target_reviews or discovered_count >= max_places:
+            if _episode_new_target_met(
+                new_relevant_review_ids,
+                new_relevant_by_observance,
+                selected_observances,
+                target_reviews,
+            ) or discovered_count >= max_places:
                 break
             place_key = discovered.place.data_id or discovered.place.place_id
             if place_key in seen_places:
@@ -529,7 +548,12 @@ def run_episode_search(
                     max_reviews_per_place,
                     cache_dir,
                 ):
-                    if len(new_relevant_review_ids) >= target_reviews:
+                    if _episode_new_target_met(
+                        new_relevant_review_ids,
+                        new_relevant_by_observance,
+                        selected_observances,
+                        target_reviews,
+                    ):
                         break
                     if not (raw.text or "").strip() or raw.rating > 2:
                         continue
@@ -582,7 +606,14 @@ def run_episode_search(
                     )
                     candidate = relevance.score >= relevance_threshold
                     if candidate:
-                        new_relevant_review_ids.add(review.review_id)
+                        if review.review_id not in new_relevant_review_ids:
+                            new_relevant_review_ids.add(review.review_id)
+                            matched_observance = _canonical_observance(
+                                relevance.observance,
+                                selected_observances,
+                            )
+                            if matched_observance:
+                                new_relevant_by_observance[matched_observance] += 1
                     else:
                         reusable_count += 1
                     matches.append(_theme_match(review.review_id, relevance, candidate, "search"))
@@ -652,6 +683,34 @@ def _score_theme_relevance(
         return RelevanceResult(0, "", f"Error de relevancia: {exc.__class__.__name__}")
 
 
+def _episode_new_target_met(
+    review_ids: set[str],
+    counts_by_observance: dict[str, int],
+    selected_observances: list[str],
+    target_reviews: int,
+) -> bool:
+    if len(review_ids) < target_reviews:
+        return False
+    if len(selected_observances) <= 1:
+        return True
+    return all(
+        counts_by_observance.get(observance, 0) >= MIN_NEW_REVIEWS_PER_OBSERVANCE
+        for observance in selected_observances
+    )
+
+
+def _canonical_observance(value: str, selected_observances: list[str]) -> str:
+    normalized = str(value or "").strip().casefold()
+    return next(
+        (
+            observance
+            for observance in selected_observances
+            if observance.strip().casefold() == normalized
+        ),
+        "",
+    )
+
+
 def _theme_match(
     review_id: str,
     relevance: RelevanceResult,
@@ -714,6 +773,20 @@ def _finish_episode_run(
         bool(match["is_episode_candidate"]) and match["source"] != "archive"
         for match in matches
     )
+    new_relevant_by_observance = {
+        observance: sum(
+            bool(match["is_episode_candidate"])
+            and match["source"] != "archive"
+            and _canonical_observance(str(match["observance"]), [observance]) == observance
+            for match in matches
+        )
+        for observance in strategy.selected_observances
+    }
+    per_observance_target = (
+        MIN_NEW_REVIEWS_PER_OBSERVANCE
+        if len(strategy.selected_observances) > 1
+        else 0
+    )
     relevant_count = archived_relevant_count + new_relevant_count
     run_id = storage.record_celebration_run(
         year=episode_date.year,
@@ -741,6 +814,8 @@ def _finish_episode_run(
             "collected": collected_count,
             "relevant": relevant_count,
             "new_relevant": new_relevant_count,
+            "new_relevant_by_observance": new_relevant_by_observance,
+            "per_observance_target": per_observance_target,
             "archived_relevant": archived_relevant_count,
             "reusable": reusable_count,
             "target": target_reviews,
@@ -750,6 +825,7 @@ def _finish_episode_run(
     print(
         "Episode search completed: "
         f"date={episode_date.isoformat()}, new={new_relevant_count}/{target_reviews}, "
+        f"per_observance={new_relevant_by_observance}, "
         f"archived={archived_relevant_count}/{target_reviews}, total={relevant_count}, "
         f"reusable={reusable_count}, discovered={discovered_count}, collected={collected_count}"
     )

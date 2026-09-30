@@ -41,6 +41,16 @@ LOCAL_QUERY_RULES = [
     (("turismo", "viaje"), ("atracción turística", "visita guiada")),
 ]
 UNSUITABLE_TOPIC_MARKERS = ("sindrome", "deficiencia")
+SENSITIVE_TOPIC_MARKERS = (
+    "cancer",
+    "suicidio",
+    "violencia",
+    "maltrato",
+    "duelo",
+    "enfermedad grave",
+    "victimas",
+    "discapacidad",
+)
 
 
 def build_celebration_strategy(
@@ -82,6 +92,8 @@ def build_celebration_strategy(
                         "interaccion humana extrana o actividades propensas a anecdotas absurdas. "
                         "Evita ecommerce generico, tiendas online, academias genericas, "
                         "servicios demasiado tecnicos y negocios donde lo normal sean solo quejas de envio o soporte. "
+                        "Descarta celebraciones sensibles relacionadas con violencia, victimas, suicidio, "
+                        "enfermedades graves, duelo o discapacidad: no deben usarse para buscar humor. "
                         "Devuelve SOLO JSON valido."
                     ),
                 },
@@ -96,6 +108,8 @@ def build_celebration_strategy(
                         "- notes: razon corta\n"
                         "- searches: array de maximo 12 objetos con query, region y rationale\n"
                         "Las queries deben ser cortas, aptas para Google Maps y centradas en Espana.\n"
+                        "Incluye al menos una query para cada celebracion seleccionada antes de "
+                        "anadir queries adicionales para cualquiera de ellas.\n"
                         "Prefiere categorias y consultas como atracciones, talleres, experiencias, "
                         "museos peculiares, restaurantes tematicos, escape rooms, mercadillos, "
                         "parques tematicos, centros de ocio o lugares fisicos donde una mala experiencia pueda ser ridicula.\n"
@@ -203,6 +217,7 @@ def _build_local_strategy(
     )
     searches: list[SearchPlan] = []
     seen_queries: set[str] = set()
+    query_groups: list[tuple[str, tuple[str, ...]]] = []
     for name in names:
         topic = _observance_topic(name)
         normalized_topic = _normalize(topic)
@@ -213,7 +228,17 @@ def _build_local_strategy(
                 break
         if not queries:
             queries = (topic, f"museo {topic}")
-        for query in queries:
+        query_groups.append((name, queries))
+
+    max_queries_per_observance = max(
+        (len(queries) for _name, queries in query_groups),
+        default=0,
+    )
+    for query_index in range(max_queries_per_observance):
+        for name, queries in query_groups:
+            if query_index >= len(queries):
+                continue
+            query = queries[query_index]
             normalized_query = _normalize(query)
             if not normalized_query or normalized_query in seen_queries:
                 continue
@@ -250,9 +275,13 @@ def _partition_searchable_observances(
             for keywords, _queries in LOCAL_QUERY_RULES
             for keyword in keywords
         )
-        if not has_query_rule and any(
+        is_sensitive = any(
+            marker in normalized_topic for marker in SENSITIVE_TOPIC_MARKERS
+        )
+        is_unsuitable = not has_query_rule and any(
             marker in normalized_topic for marker in UNSUITABLE_TOPIC_MARKERS
-        ):
+        )
+        if is_sensitive or is_unsuitable:
             if name:
                 discarded.append(name)
             continue
