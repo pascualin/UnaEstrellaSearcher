@@ -18,6 +18,7 @@ let progressTimer = null;
 let runFinished = false;
 let progressBootstrapped = false;
 let importedReviewImages = [];
+let loadedEpisodeObservanceDate = "";
 
 const progressState = {
   collectedReviews: 0,
@@ -479,7 +480,6 @@ function resetLiveProgress() {
   setText("live-above-threshold", "0");
   setText("live-episode-candidates", "0");
   setText("live-reusable", "0");
-  setText("episode-observances", "");
   setText("live-eta", "-");
   setText("live-scores", "Esperando primeras puntuaciones");
   renderLiveDashboard();
@@ -499,10 +499,142 @@ async function runWeekly() {
   progressTimer = setInterval(pollProgress, 1200);
 }
 
+function selectedEpisodeObservances() {
+  return Array.from(document.querySelectorAll(".episode-observance-checkbox:checked"))
+    .map((input) => String(input.value || "").trim())
+    .filter(Boolean);
+}
+
+function updateEpisodeObservanceSelection() {
+  const allCheckboxes = Array.from(
+    document.querySelectorAll(".episode-observance-checkbox"),
+  );
+  const checkboxes = Array.from(
+    document.querySelectorAll(".episode-observance-checkbox:not(:disabled)"),
+  );
+  const selected = selectedEpisodeObservances();
+  const selectAll = byId("select-all-episode-observances");
+  if (selectAll) {
+    selectAll.disabled = checkboxes.length === 0;
+    selectAll.checked = checkboxes.length > 0 && selected.length === checkboxes.length;
+    selectAll.indeterminate = selected.length > 0 && selected.length < checkboxes.length;
+  }
+  const runButton = byId("run-episode");
+  if (runButton) runButton.disabled = selected.length === 0;
+  if (allCheckboxes.length) {
+    setText(
+      "episode-observance-summary",
+      `${selected.length} de ${checkboxes.length} celebraciones seleccionables.`,
+    );
+  }
+}
+
+function clearEpisodeObservances() {
+  loadedEpisodeObservanceDate = "";
+  byId("episode-observances")?.replaceChildren();
+  const picker = byId("episode-observance-picker");
+  if (picker) picker.hidden = true;
+  const selectAll = byId("select-all-episode-observances");
+  if (selectAll) {
+    selectAll.disabled = false;
+    selectAll.checked = false;
+    selectAll.indeterminate = false;
+  }
+  const runButton = byId("run-episode");
+  if (runButton) runButton.disabled = true;
+  setText("episode-observance-summary", "");
+}
+
+function renderEpisodeObservances(episodeDate, observances) {
+  const container = byId("episode-observances");
+  const picker = byId("episode-observance-picker");
+  if (!container || !picker) return;
+  container.replaceChildren();
+  loadedEpisodeObservanceDate = episodeDate;
+  observances.forEach((observance) => {
+    const label = document.createElement("label");
+    label.className = "episode-observance-option";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.className = "episode-observance-checkbox";
+    input.value = String(observance.name || "");
+    input.disabled = Boolean(observance.exclusion_reason);
+    input.addEventListener("change", updateEpisodeObservanceSelection);
+    if (input.disabled) label.classList.add("is-disabled");
+    const text = document.createElement("span");
+    const name = document.createElement("span");
+    name.textContent = input.value;
+    text.append(name);
+    if (observance.exclusion_reason) {
+      const reason = document.createElement("small");
+      reason.textContent = `Excluida: ${observance.exclusion_reason}`;
+      text.append(reason);
+    }
+    label.append(input, text);
+    container.append(label);
+  });
+  picker.hidden = observances.length === 0;
+  setText(
+    "episode-observance-summary",
+    observances.length
+      ? `0 de ${observances.length} celebraciones seleccionadas.`
+      : "No se encontraron celebraciones para esa fecha.",
+  );
+  updateEpisodeObservanceSelection();
+}
+
+async function loadEpisodeObservances() {
+  const episodeDate = fieldValue("episode-date").trim();
+  if (!episodeDate) {
+    setText("status", "Selecciona la fecha de emisión.");
+    return;
+  }
+  clearEpisodeObservances();
+  const button = byId("load-episode-observances");
+  if (button) button.disabled = true;
+  setText("episode-observance-summary", "Consultando celebraciones...");
+  setText("status", `Consultando celebraciones del ${episodeDate}.`);
+  try {
+    const res = await fetch("/api/episode-observances", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date: episodeDate }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setText("episode-observance-summary", payload.message || "No se pudieron consultar las celebraciones.");
+      setText("status", payload.message || "No se pudieron consultar las celebraciones.");
+      return;
+    }
+    const observances = Array.isArray(payload.observances) ? payload.observances : [];
+    renderEpisodeObservances(episodeDate, observances);
+    setText(
+      "status",
+      observances.length
+        ? `Selecciona las celebraciones del ${episodeDate}.`
+        : `No se encontraron celebraciones para ${episodeDate}.`,
+    );
+  } catch (error) {
+    setText("episode-observance-summary", "Error de red al consultar las celebraciones.");
+    setText("status", "Error de red al consultar las celebraciones.");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 async function runEpisodeSearch() {
   const episodeDate = fieldValue("episode-date").trim();
   if (!episodeDate) {
     setText("status", "Selecciona la fecha de emisión.");
+    return;
+  }
+  if (loadedEpisodeObservanceDate !== episodeDate) {
+    setText("status", "Consulta primero las celebraciones de esta fecha.");
+    return;
+  }
+  const selectedObservances = selectedEpisodeObservances();
+  if (!selectedObservances.length) {
+    setText("status", "Selecciona al menos una celebración.");
     return;
   }
   const button = byId("run-episode");
@@ -520,6 +652,7 @@ async function runEpisodeSearch() {
         target: Number(fieldValue("episode-target", 5)),
         humor_threshold: Number(fieldValue("episode-humor-threshold", 60)),
         relevance_threshold: Number(fieldValue("episode-relevance-threshold", 60)),
+        observances: selectedObservances,
       }),
     });
     if (!res.ok) {
@@ -528,7 +661,7 @@ async function runEpisodeSearch() {
       runFinished = true;
       return;
     }
-    setText("status", `Buscando celebraciones y reseñas para ${episodeDate}.`);
+    setText("status", `Buscando reseñas para ${selectedObservances.length} celebraciones seleccionadas.`);
     if (progressTimer) clearInterval(progressTimer);
     progressTimer = setInterval(pollProgress, 1200);
   } catch (error) {
@@ -587,9 +720,9 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       const observances = Array.isArray(event.observances) ? event.observances : [];
       setText("live-stage", "Preparando celebraciones");
       setText(
-        "episode-observances",
+        "episode-observance-summary",
         observances.length
-          ? `Celebraciones: ${observances.join(" · ")}`
+          ? `Buscando para: ${observances.join(" · ")}`
           : "No se encontraron celebraciones para esa fecha.",
       );
       pushLimited(progressState.recentActivity, {
@@ -1093,7 +1226,15 @@ function bindEvents() {
   byId("scoring_model")?.addEventListener("change", () => updateOpenAIExecutionControls({ resetDefaults: true }));
   byId("scoring_reasoning_effort")?.addEventListener("change", updateOpenAIExecutionControls);
   byId("run-weekly")?.addEventListener("click", runWeekly);
+  byId("load-episode-observances")?.addEventListener("click", loadEpisodeObservances);
   byId("run-episode")?.addEventListener("click", runEpisodeSearch);
+  byId("episode-date")?.addEventListener("change", clearEpisodeObservances);
+  byId("select-all-episode-observances")?.addEventListener("change", (event) => {
+    document.querySelectorAll(".episode-observance-checkbox:not(:disabled)").forEach((checkbox) => {
+      checkbox.checked = Boolean(event.target.checked);
+    });
+    updateEpisodeObservanceSelection();
+  });
   byId("run-dry")?.addEventListener("click", runDryRun);
   byId("import-review-button")?.addEventListener("click", importReview);
   byId("clear-import-images")?.addEventListener("click", clearImportedImages);

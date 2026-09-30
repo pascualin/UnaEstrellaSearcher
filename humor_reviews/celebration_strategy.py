@@ -269,24 +269,28 @@ def _partition_searchable_observances(
     discarded: list[str] = []
     for observance in observances:
         name = str(observance.get("name") or "").strip()
-        normalized_topic = _normalize(_observance_topic(name))
-        has_query_rule = any(
-            keyword in normalized_topic
-            for keywords, _queries in LOCAL_QUERY_RULES
-            for keyword in keywords
-        )
-        is_sensitive = any(
-            marker in normalized_topic for marker in SENSITIVE_TOPIC_MARKERS
-        )
-        is_unsuitable = not has_query_rule and any(
-            marker in normalized_topic for marker in UNSUITABLE_TOPIC_MARKERS
-        )
-        if is_sensitive or is_unsuitable:
+        if observance_exclusion_reason(name):
             if name:
                 discarded.append(name)
             continue
         searchable.append(observance)
     return searchable, list(dict.fromkeys(discarded))
+
+
+def observance_exclusion_reason(name: str) -> str:
+    normalized_topic = _normalize(_observance_topic(name))
+    has_query_rule = any(
+        keyword in normalized_topic
+        for keywords, _queries in LOCAL_QUERY_RULES
+        for keyword in keywords
+    )
+    if any(marker in normalized_topic for marker in SENSITIVE_TOPIC_MARKERS):
+        return "Tema sensible"
+    if not has_query_rule and any(
+        marker in normalized_topic for marker in UNSUITABLE_TOPIC_MARKERS
+    ):
+        return "No produce una búsqueda adecuada de lugares"
+    return ""
 
 
 def _observance_topic(name: str) -> str:

@@ -20,6 +20,7 @@ from humor_reviews.celebration_strategy import (
     CelebrationStrategy,
     SearchPlan,
     build_celebration_strategy_from_text,
+    observance_exclusion_reason,
 )
 from humor_reviews.collect import RawReview
 from humor_reviews.discover import DiscoveredPlace
@@ -283,6 +284,7 @@ class CelebrationStrategyTests(unittest.TestCase):
         openai.assert_not_called()
         self.assertEqual(strategy.selected_observances, ["Día Internacional del Pulpo"])
         self.assertEqual(strategy.discarded_observances, [sensitive])
+        self.assertEqual(observance_exclusion_reason(sensitive), "Tema sensible")
 
     @patch("humor_reviews.celebration_strategy.OpenAI")
     def test_local_strategy_gives_each_observance_a_query_before_repeating(self, openai: Mock) -> None:
@@ -314,6 +316,54 @@ class CelebrationStrategyTests(unittest.TestCase):
 
 
 class EpisodeSearchTests(unittest.TestCase):
+    @patch("humor_reviews.run._emit_progress")
+    @patch("humor_reviews.run.build_celebration_strategy_from_text")
+    @patch("humor_reviews.run.fetch_observances")
+    def test_episode_search_uses_only_explicitly_selected_observances(
+        self,
+        fetch_calendar: Mock,
+        build_strategy: Mock,
+        emit: Mock,
+    ) -> None:
+        pulpo = "Día Internacional del Pulpo"
+        vision = "Día Mundial de la Visión"
+        fetch_calendar.return_value = [
+            Observance(pulpo, "2026-10-08", "https://example.com/pulpo"),
+            Observance(vision, "2026-10-08", "https://example.com/vision"),
+        ]
+        build_strategy.return_value = CelebrationStrategy([vision], [], "", [])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "config.yaml"
+            config_path.write_text(
+                f"app:\n  data_dir: {root / 'data'}\ndiscovery:\n  country: ES\nscoring: {{}}\nsafety: {{}}\n",
+                encoding="utf-8",
+            )
+            settings = load_settings(config_path)
+            storage = Storage(settings.app.data_dir / "humor_reviews.db")
+            run_episode_search(
+                storage,
+                settings,
+                episode_date=date(2026, 10, 8),
+                target_reviews=5,
+                humor_threshold=60,
+                relevance_threshold=60,
+                max_searches=5,
+                max_places=10,
+                max_reviews_per_place=10,
+                max_archived_candidates=0,
+                selected_observance_names=[vision],
+            )
+
+        build_strategy.assert_called_once_with(vision, settings.scoring)
+        found_event = next(
+            call.args[1]
+            for call in emit.call_args_list
+            if call.args[0] == "observances_found"
+        )
+        self.assertEqual(found_event["observances"], [vision])
+
     def test_multiple_observances_require_three_new_reviews_each(self) -> None:
         observances = ["Día del Pulpo", "Día de la Visión"]
 

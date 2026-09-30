@@ -688,9 +688,67 @@ main {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 .app-page .episode-observances {
-  min-height: 20px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.app-page .episode-observance-summary {
+  min-height: 18px;
   color: #52606a;
   font-size: 13px;
+}
+.app-page .episode-observance-picker {
+  border-top: 1px solid #dfe4e7;
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
+}
+.app-page .episode-observance-picker[hidden] {
+  display: none;
+}
+.app-page .episode-observance-picker-head,
+.app-page .episode-observance-actions {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.app-page .episode-observance-actions {
+  justify-content: flex-end;
+}
+.app-page .episode-observance-option,
+.app-page .episode-observance-select-all {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+}
+.app-page .episode-observance-option {
+  border: 1px solid #dfe4e7;
+  border-radius: 6px;
+  color: #26333d;
+  cursor: pointer;
+  min-width: 0;
+  padding: 10px;
+}
+.app-page .episode-observance-option input,
+.app-page .episode-observance-select-all input {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.app-page .episode-observance-option span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.app-page .episode-observance-option small {
+  color: #7b8790;
+  font-size: 11px;
+}
+.app-page .episode-observance-option.is-disabled {
+  background: #f4f5f5;
+  color: #7b8790;
+  cursor: not-allowed;
 }
 .app-page .run-hero {
   padding: 18px;
@@ -903,6 +961,17 @@ main {
   }
   .app-page .episode-run-fields {
     grid-template-columns: 1fr;
+  }
+  .app-page .episode-observances {
+    grid-template-columns: 1fr;
+  }
+  .app-page .episode-observance-picker-head,
+  .app-page .episode-observance-actions {
+    align-items: stretch;
+    display: grid;
+  }
+  .app-page .episode-observance-actions button {
+    width: 100%;
   }
   .app-page .episode-run-panel .run-card-head {
     align-items: stretch;

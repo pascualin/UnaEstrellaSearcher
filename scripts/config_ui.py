@@ -22,6 +22,8 @@ from openai import OpenAI
 import requests
 import yaml
 
+from humor_reviews.celebration_calendar import fetch_observances
+from humor_reviews.celebration_strategy import observance_exclusion_reason
 from humor_reviews.collect import _serpapi_reviews
 from humor_reviews.humor import score_review
 from humor_reviews.notion_sync import NotionSyncError, append_review_image, sync_place_reviews_page
@@ -2149,12 +2151,72 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=_runner, daemon=True).start()
             self._send(202, b"started", "text/plain; charset=utf-8")
             return
+        if self.path == "/api/episode-observances":
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            episode_date = str(payload.get("date") or "").strip()
+            try:
+                requested_date = date.fromisoformat(episode_date)
+            except ValueError:
+                self._send(
+                    400,
+                    json.dumps(
+                        {"ok": False, "message": "Selecciona una fecha válida."}
+                    ).encode("utf-8"),
+                    "application/json",
+                )
+                return
+            try:
+                settings = load_settings(CONFIG_PATH)
+                observances = fetch_observances(
+                    requested_date,
+                    settings.app.data_dir / "api_cache",
+                )
+            except Exception as exc:
+                self._send(
+                    502,
+                    json.dumps(
+                        {"ok": False, "message": str(exc)}
+                    ).encode("utf-8"),
+                    "application/json",
+                )
+                return
+            self._send(
+                200,
+                json.dumps(
+                    {
+                        "ok": True,
+                        "date": episode_date,
+                        "observances": [
+                            {
+                                "name": observance.name,
+                                "source_url": observance.source_url,
+                                "exclusion_reason": observance_exclusion_reason(
+                                    observance.name
+                                ),
+                            }
+                            for observance in observances
+                        ],
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8"),
+                "application/json",
+            )
+            return
         if self.path == "/api/run-episode":
             import subprocess
 
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             episode_date = str(payload.get("date") or "").strip()
+            requested_observances = payload.get("observances")
+            selected_observances = list(
+                dict.fromkeys(
+                    str(name).strip()
+                    for name in requested_observances
+                    if str(name).strip()
+                )
+            ) if isinstance(requested_observances, list) else []
             try:
                 date.fromisoformat(episode_date)
                 target = max(1, min(20, int(payload.get("target") or 5)))
@@ -2172,6 +2234,17 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if not selected_observances:
+                self._send(
+                    400,
+                    json.dumps(
+                        {"ok": False, "message": "Selecciona al menos una celebración."}
+                    ).encode("utf-8"),
+                    "application/json",
+                )
+                return
+            selected_observances = selected_observances[:50]
+
             log_path = _progress_log_path()
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_path.write_text("", encoding="utf-8")
@@ -2179,21 +2252,24 @@ class Handler(BaseHTTPRequestHandler):
             def _episode_runner() -> None:
                 env = os.environ.copy()
                 env["PROGRESS_LOG"] = str(log_path)
+                command = [
+                    sys.executable,
+                    "-m",
+                    "humor_reviews.run",
+                    "episode-search",
+                    "--date",
+                    episode_date,
+                    "--target",
+                    str(target),
+                    "--humor-threshold",
+                    str(humor_threshold),
+                    "--relevance-threshold",
+                    str(relevance_threshold),
+                ]
+                for observance in selected_observances:
+                    command.extend(["--observance", observance])
                 result = subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "humor_reviews.run",
-                        "episode-search",
-                        "--date",
-                        episode_date,
-                        "--target",
-                        str(target),
-                        "--humor-threshold",
-                        str(humor_threshold),
-                        "--relevance-threshold",
-                        str(relevance_threshold),
-                    ],
+                    command,
                     cwd=str(ROOT),
                     capture_output=True,
                     text=True,
@@ -2220,7 +2296,15 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=_episode_runner, daemon=True).start()
             self._send(
                 202,
-                json.dumps({"ok": True, "date": episode_date, "target": target}).encode("utf-8"),
+                json.dumps(
+                    {
+                        "ok": True,
+                        "date": episode_date,
+                        "target": target,
+                        "observances": selected_observances,
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8"),
                 "application/json",
             )
             return

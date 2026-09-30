@@ -37,7 +37,7 @@
                   <div class="run-section-label">Próximo episodio</div>
                   <h3>Búsqueda por celebraciones</h3>
                 </div>
-                <button id="run-episode">Buscar para el episodio</button>
+                <button id="load-episode-observances">Consultar celebraciones</button>
               </div>
               <div class="compact-form-grid episode-run-fields">
                 <div>
@@ -57,7 +57,20 @@
                   <input id="episode-relevance-threshold" type="number" min="0" max="100" value="60" />
                 </div>
               </div>
-              <div class="episode-observances" id="episode-observances"></div>
+              <div class="episode-observance-summary" id="episode-observance-summary"></div>
+              <div class="episode-observance-picker" id="episode-observance-picker" hidden>
+                <div class="episode-observance-picker-head">
+                  <strong>Celebraciones de la fecha</strong>
+                  <label class="episode-observance-select-all">
+                    <input id="select-all-episode-observances" type="checkbox" />
+                    <span>Seleccionar todas</span>
+                  </label>
+                </div>
+                <div class="episode-observances" id="episode-observances"></div>
+                <div class="episode-observance-actions">
+                  <button id="run-episode" disabled>Buscar reseñas seleccionadas</button>
+                </div>
+              </div>
             </section>
             <section class="card app-card app-card-accent run-hero">
               <div class="run-hero-top">

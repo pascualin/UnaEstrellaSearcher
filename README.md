@@ -212,14 +212,16 @@ PYTHONPATH=. .venv/bin/python -m humor_reviews.run themed-celebrations \
 ### Buscar reseñas para un episodio por fecha
 
 El flujo consulta las celebraciones de la fecha en
-[Día Internacional de](https://www.diainternacionalde.com/), revisa primero las
-reseñas graciosas ya archivadas y después busca en Google Maps hasta reunir el
-objetivo de reseñas nuevas o agotar los límites de búsqueda. El archivo aporta
-un cupo adicional del mismo tamaño, pero sus coincidencias nunca sustituyen a
-las nuevas: con `--target 5` puede devolver hasta 5 nuevas y 5 antiguas. Cuando
-hay varias celebraciones seleccionadas, el objetivo global se considera un
-mínimo y se buscan al menos 3 reseñas nuevas por celebración. Las celebraciones
-descartadas por sensibilidad o por no producir búsquedas útiles no generan cupo.
+[Día Internacional de](https://www.diainternacionalde.com/). En la interfaz se
+muestran primero para que el usuario elija cuáles quiere investigar; la búsqueda
+no comienza hasta confirmar al menos una. Después revisa las reseñas graciosas
+ya archivadas y busca en Google Maps hasta reunir el objetivo de reseñas nuevas
+o agotar los límites. El archivo aporta un cupo adicional del mismo tamaño, pero
+sus coincidencias nunca sustituyen a las nuevas: con `--target 5` puede devolver
+hasta 5 nuevas y 5 antiguas. Cuando hay varias celebraciones seleccionadas, el
+objetivo global se considera un mínimo y se buscan al menos 3 reseñas nuevas por
+celebración. Las descartadas por sensibilidad o por no producir búsquedas útiles
+no generan cupo.
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m humor_reviews.run episode-search \
@@ -228,6 +230,10 @@ PYTHONPATH=. .venv/bin/python -m humor_reviews.run episode-search \
   --humor-threshold 60 \
   --relevance-threshold 60
 ```
+
+El comando admite repetir `--observance "Nombre"` para limitar la ejecución a
+celebraciones concretas de esa fecha. Si no se indica, mantiene el comportamiento
+compatible de utilizar todas las celebraciones encontradas.
 
 La relevancia se guarda por ejecución y celebración. Una reseña que supere el
 umbral de humor pero no el de relevancia permanece pendiente en la base de datos

@@ -371,6 +371,7 @@ def run_episode_search(
     max_places: int,
     max_reviews_per_place: int,
     max_archived_candidates: int,
+    selected_observance_names: list[str] | None = None,
 ) -> None:
     cache_dir = settings.app.data_dir / "api_cache"
     _emit_progress(
@@ -383,6 +384,17 @@ def run_episode_search(
         },
     )
     observances = fetch_observances(episode_date, cache_dir)
+    if selected_observance_names is not None:
+        selected_names = {
+            str(name).strip().casefold()
+            for name in selected_observance_names
+            if str(name).strip()
+        }
+        observances = [
+            observance
+            for observance in observances
+            if observance.name.strip().casefold() in selected_names
+        ]
     _emit_progress(
         "observances_found",
         {
@@ -913,6 +925,7 @@ def main() -> None:
     episode_search.add_argument("--max-places", type=int, default=30)
     episode_search.add_argument("--max-reviews-per-place", type=int, default=10)
     episode_search.add_argument("--max-archived-candidates", type=int, default=40)
+    episode_search.add_argument("--observance", action="append", dest="observances")
 
     args = parser.parse_args()
 
@@ -982,6 +995,7 @@ def main() -> None:
             max_places=max(1, args.max_places),
             max_reviews_per_place=max(1, args.max_reviews_per_place),
             max_archived_candidates=max(0, args.max_archived_candidates),
+            selected_observance_names=args.observances,
         )
 
 
