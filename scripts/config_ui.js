@@ -15,17 +15,25 @@ const scoringApiKeyEnvs = {
 let appConfig = null;
 let progressOffset = 0;
 let progressTimer = null;
+let progressPollInFlight = false;
+let progressPollGeneration = 0;
+const processedProgressLines = new Set();
 let runFinished = false;
 let progressBootstrapped = false;
 let importedReviewImages = [];
 let loadedEpisodeObservanceDate = "";
+let runActive = false;
+let placeStatusSyncSequence = 0;
+let urlImportJobId = "";
+let urlImportTimer = null;
 
 const progressState = {
+  mode: "",
+  humorThreshold: 0,
   collectedReviews: 0,
   aboveThreshold: 0,
   episodeCandidates: 0,
   newEpisodeCandidates: 0,
-  archivedEpisodeCandidates: 0,
   reusableFinds: 0,
   processedSites: 0,
   startedAtMs: 0,
@@ -43,11 +51,12 @@ const progressState = {
   recentActivity: [],
   topPlaces: [],
   failed: false,
-  archivedChecked: 0,
-  archivedTotal: 0,
+  cancelled: false,
   selectedObservances: [],
   perObservanceTarget: 0,
   newCandidatesByObservance: {},
+  placeKeysById: new Map(),
+  placeKeysByName: new Map(),
 };
 
 function setText(id, value) {
@@ -64,6 +73,36 @@ function fieldValue(id, fallback = "") {
 function setFieldValue(id, value) {
   const el = byId(id);
   if (el) el.value = value;
+}
+
+function setRunActive(active, { stopping = false } = {}) {
+  runActive = Boolean(active);
+  const weeklyButton = byId("run-weekly");
+  const dryRunButton = byId("run-dry");
+  const stopButton = byId("stop-run");
+  if (weeklyButton) weeklyButton.disabled = runActive;
+  if (dryRunButton) dryRunButton.disabled = runActive;
+  if (stopButton) {
+    stopButton.disabled = !runActive || stopping;
+    stopButton.textContent = stopping ? "Deteniendo..." : "Detener búsqueda";
+  }
+  updateEpisodeObservanceSelection();
+}
+
+function resetProgressStream() {
+  progressOffset = 0;
+  progressPollGeneration += 1;
+  processedProgressLines.clear();
+}
+
+function startProgressPolling() {
+  if (progressTimer !== null) clearInterval(progressTimer);
+  progressTimer = setInterval(pollProgress, 1200);
+}
+
+function stopProgressPolling() {
+  if (progressTimer !== null) clearInterval(progressTimer);
+  progressTimer = null;
 }
 
 function replaceSelectOptions(id, values, selectedValue, defaultValue = "") {
@@ -241,6 +280,38 @@ function upsertRecentActivity(item) {
   pushLimited(progressState.recentActivity, item);
 }
 
+function normalizeProgressPlaceName(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("es")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function progressPlaceKey(event, fallback = "") {
+  const identifiers = [event?.place_data_id, event?.place_id, event?.google_place_id]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const nameKey = normalizeProgressPlaceName(event?.place_name);
+  let placeKey = identifiers
+    .map((identifier) => progressState.placeKeysById.get(identifier))
+    .find(Boolean);
+  if (!placeKey && nameKey) placeKey = progressState.placeKeysByName.get(nameKey);
+  if (!placeKey) placeKey = identifiers[0] || (nameKey ? `name:${nameKey}` : fallback);
+  identifiers.forEach((identifier) => progressState.placeKeysById.set(identifier, placeKey));
+  if (nameKey) progressState.placeKeysByName.set(nameKey, placeKey);
+  return placeKey;
+}
+
+function progressPlaceHref(event) {
+  return placeDetailHref(event?.place_data_id || event?.place_id || event?.google_place_id);
+}
+
+function progressPlaceId(event) {
+  return String(event?.place_data_id || event?.place_id || event?.google_place_id || "").trim();
+}
+
 function upsertTopPlace(item) {
   const existing = progressState.topPlaces.find((entry) => entry.placeKey === item.placeKey);
   const incrementedReviewCount = Number(existing?.reviewCount || 0) + Number(item.reviewIncrement || 0);
@@ -268,6 +339,32 @@ function placeDetailHref(placeId) {
   return `/place?id=${encodeURIComponent(value)}`;
 }
 
+async function syncTopPlaceStatuses() {
+  if (!has("run-top-list") || !progressState.topPlaces.length) return;
+  const placeIds = [...new Set(progressState.topPlaces.map((item) => item.placeId).filter(Boolean))];
+  if (!placeIds.length) return;
+  const sequence = ++placeStatusSyncSequence;
+  try {
+    const params = new URLSearchParams({ ids: placeIds.join(",") });
+    const response = await fetch(`/api/place-statuses?${params.toString()}`);
+    if (!response.ok || sequence !== placeStatusSyncSequence) return;
+    const payload = await response.json();
+    const statuses = payload.statuses || {};
+    let changed = false;
+    progressState.topPlaces.forEach((item) => {
+      if (!Object.hasOwn(statuses, item.placeId)) return;
+      const processed = Boolean(statuses[item.placeId]);
+      if (item.processed !== processed) {
+        item.processed = processed;
+        changed = true;
+      }
+    });
+    if (changed) renderLiveDashboard();
+  } catch (error) {
+    // The live dashboard remains usable if this optional status refresh fails.
+  }
+}
+
 function renderList(containerId, items, emptyText, renderItem) {
   const container = byId(containerId);
   if (!container) return;
@@ -287,7 +384,12 @@ function renderLiveDashboard() {
   const placeSuccessRate = progressState.processedSites > 0 ? (progressState.productivePlaces / progressState.processedSites) * 100 : 0;
   const statusText = byId("live-stage")?.textContent || "En espera";
 
-  setText("run-status-chip", progressState.failed ? "Error" : (runFinished ? "Completado" : statusText));
+  setText(
+    "run-status-chip",
+    progressState.failed
+      ? "Error"
+      : (progressState.cancelled ? "Detenida" : (runFinished ? "Completado" : statusText)),
+  );
   setText("run-current-query", progressState.currentQuery || "Sin búsqueda activa");
   setText("run-current-region", progressState.currentRegion || "Esperando arranque");
   setText("run-throughput", `${throughput.toFixed(1)} reseñas/min`);
@@ -311,7 +413,7 @@ function renderLiveDashboard() {
         </div>
         <div class="run-live-item-meta">${item.meta || ""}</div>
         <div class="run-live-item-copy">${item.copy || ""}</div>
-        ${item.href ? `<div><a class="run-live-link" href="${item.href}">Abrir sitio</a></div>` : ""}
+        ${item.href ? `<div><a class="run-live-link" href="${item.href}" target="_blank" rel="noopener">Abrir sitio</a></div>` : ""}
       </div>
     `,
   );
@@ -321,14 +423,17 @@ function renderLiveDashboard() {
     progressState.topPlaces,
     "Los sitios con mejores reseñas aparecerán aquí cuando el scorer encuentre material interesante.",
     (item) => `
-      <div class="run-live-item run-live-place-item">
+      <div class="run-live-item run-live-place-item ${item.processed ? "is-processed" : "is-pending"}">
         <div class="run-live-item-head">
-          <div class="run-live-item-title">${item.href ? `<a href="${item.href}">${item.place || "Sitio desconocido"}</a>` : (item.place || "Sitio desconocido")}</div>
-          <div class="run-live-item-score">#${item.score}</div>
+          <div class="run-live-item-title">${item.href ? `<a href="${item.href}" target="_blank" rel="noopener">${item.place || "Sitio desconocido"}</a>` : (item.place || "Sitio desconocido")}</div>
+          <div class="run-live-item-heading-meta">
+            <strong class="run-place-status ${item.processed ? "is-processed" : "is-pending"}">${item.processed ? "PROCESADO" : "PENDIENTE"}</strong>
+            <div class="run-live-item-score">#${item.score}</div>
+          </div>
         </div>
         <div class="run-live-item-meta">${item.reviewCount || 0} reseñas puntuadas · ${item.qualifyingCount || 0} candidatas</div>
         <div class="run-live-item-copy">${item.copy || (item.latestReviewer ? `Última reseña: ${item.latestReviewer}.` : "Sitio procesado durante esta ejecución.")}</div>
-        ${item.href ? `<div><a class="run-live-link" href="${item.href}">Abrir sitio</a></div>` : ""}
+        ${item.href ? `<div><a class="run-live-link" href="${item.href}" target="_blank" rel="noopener">Abrir sitio</a></div>` : ""}
       </div>
     `,
   );
@@ -400,7 +505,7 @@ async function saveConfig() {
       ...(payload.providers?.serpapi || {}),
       api_key_env: "SERPAPI_API_KEY",
       hl: "es",
-      gl: (normalizedCountry || "ES").toLowerCase(),
+      gl: normalizedCountry.toLowerCase(),
     },
   };
   payload.scoring = {
@@ -444,11 +549,13 @@ function updateEta() {
 
 function resetLiveProgress() {
   if (!has("live-stage")) return;
+  placeStatusSyncSequence += 1;
+  progressState.mode = "";
+  progressState.humorThreshold = 0;
   progressState.collectedReviews = 0;
   progressState.aboveThreshold = 0;
   progressState.episodeCandidates = 0;
   progressState.newEpisodeCandidates = 0;
-  progressState.archivedEpisodeCandidates = 0;
   progressState.reusableFinds = 0;
   progressState.processedSites = 0;
   progressState.startedAtMs = Date.now();
@@ -466,11 +573,12 @@ function resetLiveProgress() {
   progressState.recentActivity = [];
   progressState.topPlaces = [];
   progressState.failed = false;
-  progressState.archivedChecked = 0;
-  progressState.archivedTotal = 0;
+  progressState.cancelled = false;
   progressState.selectedObservances = [];
   progressState.perObservanceTarget = 0;
   progressState.newCandidatesByObservance = {};
+  progressState.placeKeysById = new Map();
+  progressState.placeKeysByName = new Map();
   setText("live-stage", "Iniciando");
   setText("live-sites", "0");
   setText("live-place", "-");
@@ -489,14 +597,15 @@ async function runWeekly() {
   setText("status", "Ejecutando pipeline...");
   runFinished = false;
   resetLiveProgress();
-  progressOffset = 0;
+  resetProgressStream();
   const res = await fetch("/api/run-weekly", { method: "POST" });
   if (!res.ok) {
-    setText("status", "Error al iniciar el run.");
+    const payload = await res.json().catch(() => ({}));
+    setText("status", payload.message || "Error al iniciar el run.");
     return;
   }
-  if (progressTimer) clearInterval(progressTimer);
-  progressTimer = setInterval(pollProgress, 1200);
+  setRunActive(true);
+  startProgressPolling();
 }
 
 function selectedEpisodeObservances() {
@@ -520,7 +629,7 @@ function updateEpisodeObservanceSelection() {
     selectAll.indeterminate = selected.length > 0 && selected.length < checkboxes.length;
   }
   const runButton = byId("run-episode");
-  if (runButton) runButton.disabled = selected.length === 0;
+  if (runButton) runButton.disabled = runActive || selected.length === 0;
   if (allCheckboxes.length) {
     setText(
       "episode-observance-summary",
@@ -642,7 +751,7 @@ async function runEpisodeSearch() {
   setText("status", "Preparando la búsqueda del episodio...");
   runFinished = false;
   resetLiveProgress();
-  progressOffset = 0;
+  resetProgressStream();
   try {
     const res = await fetch("/api/run-episode", {
       method: "POST",
@@ -662,13 +771,39 @@ async function runEpisodeSearch() {
       return;
     }
     setText("status", `Buscando reseñas para ${selectedObservances.length} celebraciones seleccionadas.`);
-    if (progressTimer) clearInterval(progressTimer);
-    progressTimer = setInterval(pollProgress, 1200);
+    setRunActive(true);
+    startProgressPolling();
   } catch (error) {
     setText("status", "Error de red al iniciar la búsqueda del episodio.");
     runFinished = true;
   } finally {
-    if (button) button.disabled = false;
+    updateEpisodeObservanceSelection();
+  }
+}
+
+async function stopRun() {
+  if (!runActive) return;
+  setRunActive(true, { stopping: true });
+  setText("live-stage", "Deteniendo búsqueda");
+  setText("status", "Solicitando la detención de la búsqueda activa...");
+  try {
+    const res = await fetch("/api/stop-run", { method: "POST" });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setText("status", payload.message || "No se pudo detener la búsqueda.");
+      setRunActive(true);
+      return;
+    }
+    setText("status", payload.message || "Deteniendo la búsqueda activa.");
+    if (!payload.stopped) {
+      runFinished = true;
+      setRunActive(false);
+      return;
+    }
+    if (progressTimer === null) startProgressPolling();
+  } catch (error) {
+    setText("status", "Error de red al detener la búsqueda.");
+    setRunActive(true);
   }
 }
 
@@ -697,6 +832,8 @@ function closeNoResults() {
 function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
   if (!has("live-stage")) return;
   (payload.lines || []).forEach((line) => {
+    if (processedProgressLines.has(line)) return;
+    processedProgressLines.add(line);
     let event;
     try {
       event = JSON.parse(line);
@@ -746,39 +883,29 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         meta: selected.join(" · "),
         copy: progressState.perObservanceTarget
           ? `La estrategia buscará al menos ${progressState.perObservanceTarget} reseñas nuevas por celebración seleccionada.`
-          : "La estrategia está lista y comienza revisando el archivo existente.",
+          : "La estrategia está lista para buscar reseñas nuevas.",
       });
-    }
-    if (event.event === "archive_scan_started") {
-      progressState.archivedChecked = 0;
-      progressState.archivedTotal = Number(event.total || 0);
-      setText("live-stage", "Revisando reseñas guardadas");
-      setText(
-        "status",
-        progressState.archivedTotal
-          ? `Buscando hasta ${event.target || 5} candidatas antiguas entre ${progressState.archivedTotal} reseñas guardadas.`
-          : "No hay reseñas guardadas que revisar. Preparando búsquedas nuevas.",
-      );
-    }
-    if (event.event === "archive_scan_progress") {
-      progressState.archivedChecked = Number(event.checked || 0);
-      progressState.archivedTotal = Number(event.total || progressState.archivedTotal);
-      setText("live-stage", "Revisando reseñas guardadas");
-      setText(
-        "status",
-        `Archivo: ${progressState.archivedChecked}/${progressState.archivedTotal} revisadas.`,
-      );
     }
     if (event.event === "discovered_place") {
       setText("live-stage", "Descubriendo sitios");
       setText("live-place", event.place_name || event.place_id || byId("live-place")?.textContent || "-");
       upsertRecentActivity({
-        placeKey: event.place_id || event.place_name,
+        placeKey: progressPlaceKey(event),
         title: event.place_name || "Sitio descubierto",
         badge: "Sitio",
         meta: event.category || "Sin categoría",
         copy: "Entró en la cola de análisis.",
-        href: placeDetailHref(event.place_id),
+        href: progressPlaceHref(event),
+      });
+    }
+    if (event.event === "processed_place_skipped") {
+      pushLimited(progressState.recentActivity, {
+        placeKey: progressPlaceKey(event),
+        title: event.place_name || "Sitio procesado",
+        badge: "Procesado",
+        meta: "Omitido",
+        copy: "No se han evaluado reseñas nuevas de este sitio.",
+        href: progressPlaceHref(event),
       });
     }
     if (event.event === "sites_found") {
@@ -790,18 +917,16 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       setText("live-place", event.place_name || event.place_id || "-");
       if (!progressState.lastScoreText) setText("live-scores", "Buscando reseñas nuevas para puntuar");
       upsertRecentActivity({
-        placeKey: event.place_id || event.place_name,
+        placeKey: progressPlaceKey(event),
         title: event.place_name || event.place_id || "Sitio en proceso",
         badge: "Leyendo",
         meta: "Inicio de recogida",
         copy: "Comenzando a recopilar reseñas de este sitio.",
-        href: placeDetailHref(event.place_id),
+        href: progressPlaceHref(event),
       });
     }
     if ((event.event === "api_cache_hit" || event.event === "api_response") && event.api === "google_maps_reviews") {
       setText("live-stage", "Leyendo reseñas");
-      progressState.collectedReviews += Number(event.review_count || 0);
-      setText("live-count", String(progressState.collectedReviews));
       if (!progressState.lastScoreText) setText("live-scores", "Sin puntuaciones nuevas todavía");
     }
     if (event.event === "review_scored") {
@@ -809,11 +934,14 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       setText("live-place", event.place_name || event.place_id || byId("live-place")?.textContent || "-");
       const reviewerName = String(event.reviewer_name || "").trim();
       const numericScore = Number(event.score || 0);
+      progressState.collectedReviews += 1;
       progressState.scoredReviews += 1;
       progressState.totalScore += numericScore;
       progressState.topScore = progressState.topScore == null ? numericScore : Math.max(progressState.topScore, numericScore);
-      const threshold = has("humor_threshold") ? Number(fieldValue("humor_threshold", 0)) : configNumber("app.humor_threshold", 0);
-      if (numericScore >= threshold) {
+      setText("live-count", String(progressState.collectedReviews));
+      const qualifiesForWeekly = progressState.mode !== "episode"
+        && numericScore >= progressState.humorThreshold;
+      if (qualifiesForWeekly) {
         progressState.aboveThreshold += 1;
         setText("live-above-threshold", String(progressState.aboveThreshold));
       }
@@ -823,15 +951,16 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       const reviewCopy = reviewerName
         ? `Última reseña puntuada: ${reviewerName}.`
         : "Nueva reseña puntuada en este sitio.";
-      const placeKey = event.place_id || event.place_name || `place-${progressState.processedSites}`;
+      const placeKey = progressPlaceKey(event, `place-${progressState.processedSites}`);
       const topPlace = upsertTopPlace({
         placeKey,
+        placeId: progressPlaceId(event),
         place: event.place_name || event.place_id || "Sitio",
         score: numericScore,
         reviewCount: Number(event.review_count || 1),
-        qualifyingIncrement: numericScore >= threshold ? 1 : 0,
+        qualifyingIncrement: qualifiesForWeekly ? 1 : 0,
         latestReviewer: reviewerName,
-        href: placeDetailHref(event.place_id),
+        href: progressPlaceHref(event),
       });
       upsertRecentActivity({
         placeKey,
@@ -843,19 +972,27 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       });
     }
     if (event.event === "theme_review_scored") {
+      if (event.source === "archive") return;
       const candidate = Boolean(event.episode_candidate);
-      const fromArchive = event.source === "archive";
       const numericHumorScore = Number(event.humor_score || 0);
       const reviewerName = String(event.reviewer_name || "").trim();
+      const placeKey = progressPlaceKey(event, event.review_id);
+      progressState.aboveThreshold += 1;
+      setText("live-above-threshold", String(progressState.aboveThreshold));
+      upsertTopPlace({
+        placeKey,
+        placeId: progressPlaceId(event),
+        place: event.place_name || event.place_id || "Sitio",
+        score: numericHumorScore,
+        qualifyingIncrement: 1,
+        latestReviewer: reviewerName,
+        href: progressPlaceHref(event),
+      });
       if (candidate) {
-        if (fromArchive) {
-          progressState.archivedEpisodeCandidates += 1;
-        } else {
-          progressState.newEpisodeCandidates += 1;
-          const observance = String(event.observance || "");
-          if (Object.hasOwn(progressState.newCandidatesByObservance, observance)) {
-            progressState.newCandidatesByObservance[observance] += 1;
-          }
+        progressState.newEpisodeCandidates += 1;
+        const observance = String(event.observance || "");
+        if (Object.hasOwn(progressState.newCandidatesByObservance, observance)) {
+          progressState.newCandidatesByObservance[observance] += 1;
         }
         progressState.episodeCandidates += 1;
         setText("live-episode-candidates", String(progressState.episodeCandidates));
@@ -867,58 +1004,22 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         setText(
           "status",
           observanceProgress
-            ? `Nuevas: ${progressState.newEpisodeCandidates}. ${observanceProgress}. Antiguas: ${progressState.archivedEpisodeCandidates}.`
-            : `Candidatas: ${progressState.newEpisodeCandidates} nuevas · ${progressState.archivedEpisodeCandidates} antiguas.`,
+            ? `Para el episodio: ${progressState.newEpisodeCandidates}. ${observanceProgress}.`
+            : `Candidatas para el episodio: ${progressState.newEpisodeCandidates}.`,
         );
-      } else if (!fromArchive) {
+      } else {
         progressState.reusableFinds += 1;
         setText("live-reusable", String(progressState.reusableFinds));
-      }
-      const placeKey = event.place_id || event.place_name || event.review_id;
-      if (fromArchive) {
-        progressState.collectedReviews += 1;
-        progressState.scoredReviews += 1;
-        progressState.totalScore += numericHumorScore;
-        progressState.topScore = progressState.topScore == null
-          ? numericHumorScore
-          : Math.max(progressState.topScore, numericHumorScore);
-        progressState.aboveThreshold += 1;
-        setText("live-count", String(progressState.collectedReviews));
-        setText("live-above-threshold", String(progressState.aboveThreshold));
-        if (candidate) {
-          upsertTopPlace({
-            placeKey,
-            place: event.place_name || "Sitio archivado",
-            score: numericHumorScore,
-            reviewIncrement: 1,
-            qualifyingIncrement: 1,
-            latestReviewer: reviewerName,
-            copy: `${event.observance || "Celebración"} · Relevancia #${event.relevance_score || 0}`,
-            href: placeDetailHref(event.place_id),
-          });
-          setText("live-sites", String(progressState.topPlaces.length));
-          progressState.processedSites = progressState.topPlaces.length;
-          setText("live-processed-sites", String(progressState.processedSites));
-          progressState.productivePlaces = progressState.topPlaces.length;
-        }
-        progressState.lastScoreText = reviewerName
-          ? `${reviewerName}: #${numericHumorScore}`
-          : `#${numericHumorScore}`;
-        setText("live-scores", progressState.lastScoreText);
       }
       upsertRecentActivity({
         placeKey,
         title: event.place_name || "Reseña temática",
-        badge: candidate
-          ? (fromArchive ? "Antigua" : "Nueva")
-          : (fromArchive ? "Archivo" : "Guardada"),
+        badge: candidate ? "Nueva" : "Guardada",
         meta: `Humor #${event.humor_score || 0} · Relevancia #${event.relevance_score || 0}`,
         copy: candidate
           ? `${event.observance || "Celebración"}: ${event.relevance_notes || "candidata relevante"}`
-          : (fromArchive
-            ? "La reseña del archivo no encaja con este episodio."
-            : "Es graciosa y queda disponible para otro episodio."),
-        href: placeDetailHref(event.place_id),
+          : "Es graciosa y queda disponible para otro episodio.",
+        href: progressPlaceHref(event),
       });
     }
     if (event.event === "place_done") {
@@ -933,14 +1034,15 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         setText("live-scores", "Sin reseñas nuevas puntuadas en este sitio");
       }
       const topScore = scores.length ? Math.max(...scores) : null;
-      const placeKey = event.place_id || event.place_name || `place-${progressState.processedSites}`;
+      const placeKey = progressPlaceKey(event, `place-${progressState.processedSites}`);
       if (topScore != null) {
         upsertTopPlace({
           placeKey,
+          placeId: progressPlaceId(event),
           place: event.place_name || event.place_id || "Sitio",
           score: topScore,
           reviewCount: scores.length,
-          href: placeDetailHref(event.place_id),
+          href: progressPlaceHref(event),
         });
       }
       upsertRecentActivity({
@@ -949,7 +1051,7 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         badge: topScore == null ? "0" : `#${topScore}`,
         meta: scores.length ? `Top #${topScore}` : "Sin señal nueva",
         copy: scores.length ? `Se cerró el sitio con ${scores.length} reseñas puntuadas.` : "El sitio terminó sin reseñas nuevas.",
-        href: placeDetailHref(event.place_id),
+        href: progressPlaceHref(event),
       });
     }
     if (event.event === "place_failed") {
@@ -959,14 +1061,14 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       setText("live-stage", "Error en un sitio");
       setText("live-place", event.place_name || event.place_id || byId("live-place")?.textContent || "-");
       setText("status", `Falló la recogida en ${event.place_name || event.place_id || "un sitio"}.`);
-      const placeKey = event.place_id || event.place_name || `failed-${progressState.processedSites}`;
+      const placeKey = progressPlaceKey(event, `failed-${progressState.processedSites}`);
       upsertRecentActivity({
         placeKey,
         title: event.place_name || event.place_id || "Error en sitio",
         badge: "Error",
         meta: "Recogida fallida",
         copy: String(event.error || "Error no especificado"),
-        href: placeDetailHref(event.place_id),
+        href: progressPlaceHref(event),
       });
     }
     if (event.event === "search_failed") {
@@ -982,18 +1084,31 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
     }
     if (event.event === "run_complete") {
       runFinished = true;
-      setText("live-stage", "Completado");
+      setRunActive(false);
       const perObservanceTarget = Number(event.per_observance_target || 0);
       const countsByObservance = event.new_relevant_by_observance || {};
+      const episodeFound = Number(event.new_relevant ?? event.relevant ?? 0);
+      const episodeTarget = Number(event.target || 0);
+      const episodeTargetMet = event.mode !== "episode"
+        || (event.target_met == null ? episodeFound >= episodeTarget : Boolean(event.target_met));
+      const completionReason = String(event.completion_reason || "searches_exhausted");
       const observanceSummary = perObservanceTarget
         ? Object.entries(countsByObservance)
           .map(([observance, count]) => `${observance}: ${count}/${perObservanceTarget}`)
           .join(" · ")
         : "";
+      const exhaustedDetail = completionReason === "max_places_reached"
+        ? `Se alcanzó el límite de ${event.discovered || 0} sitios.`
+        : (completionReason === "no_observances"
+          ? "No había celebraciones aplicables."
+          : `Se agotaron ${event.searches_attempted ?? progressState.searchCount} búsquedas distintas.`);
+      setText("live-stage", episodeTargetMet ? "Completado" : "Objetivo no alcanzado");
       setText(
         "status",
         event.mode === "episode"
-          ? `Finalizado. Nuevas: ${event.new_relevant || 0}/${event.target || 0}. ${observanceSummary ? `Por celebración: ${observanceSummary}. ` : ""}Antiguas: ${event.archived_relevant || 0}/${event.archive_target || event.target || 0}. Total: ${event.relevant || 0}. Guardadas para otros: ${event.reusable || 0}.`
+          ? (episodeTargetMet
+            ? `Objetivo alcanzado. Para este episodio: ${episodeFound}/${episodeTarget}. ${observanceSummary ? `Por celebración: ${observanceSummary}. ` : ""}Guardadas para otros: ${event.reusable || 0}.`
+            : `Búsqueda agotada con ${episodeFound}/${episodeTarget} reseñas para el episodio. ${exhaustedDetail} ${observanceSummary ? `Por celebración: ${observanceSummary}. ` : ""}Guardadas para otros: ${event.reusable || 0}.`)
           : `Finalizado. Sitios: ${event.discovered}, reseñas nuevas: ${event.collected}`,
       );
       setText("live-count", String(progressState.collectedReviews));
@@ -1003,16 +1118,18 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
       setText("live-sites", String(completedSiteCount));
       progressState.processedSites = completedSiteCount;
       updateEta();
-      setText("live-eta", "Completado");
-      if (progressTimer) clearInterval(progressTimer);
+      setText("live-eta", episodeTargetMet ? "Completado" : "Sin más búsquedas");
+      stopProgressPolling();
       pushLimited(progressState.recentActivity, {
-        title: "Ejecución completada",
-        badge: "Done",
+        title: episodeTargetMet ? "Objetivo alcanzado" : "Búsqueda agotada",
+        badge: episodeTargetMet ? "Completa" : "Incompleta",
         meta: event.mode === "episode"
-          ? `${event.new_relevant || 0}/${event.target || 0} nuevas · ${event.archived_relevant || 0} antiguas · ${event.reusable || 0} reutilizables`
+          ? `${episodeFound}/${episodeTarget} para el episodio · ${event.reusable || 0} para otros`
           : `${event.discovered || 0} sitios · ${event.collected || 0} reseñas`,
         copy: event.mode === "episode"
-          ? (observanceSummary || "La búsqueda temática terminó y todos los hallazgos graciosos quedaron guardados.")
+          ? (episodeTargetMet
+            ? (observanceSummary || "La búsqueda temática alcanzó el objetivo configurado.")
+            : exhaustedDetail)
           : "La ejecución terminó y ya no quedan sitios en cola.",
       });
       if (showTransientAlerts && Number(event.discovered || 0) === 0 && progressState.noResultsCount > 0) {
@@ -1025,7 +1142,14 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
     if (event.event === "run_started") {
       runFinished = false;
       progressState.failed = false;
+      progressState.cancelled = false;
+      setRunActive(true);
       resetLiveProgress();
+      progressState.mode = event.mode || (String(event.message || "").startsWith("weekly") ? "weekly" : "");
+      const eventHumorThreshold = Number(event.humor_threshold);
+      progressState.humorThreshold = Number.isFinite(eventHumorThreshold)
+        ? eventHumorThreshold
+        : configNumber("app.humor_threshold", 0);
       setText("live-stage", "Ejecutando");
       setText("status", "Ejecutando pipeline...");
       pushLimited(progressState.recentActivity, {
@@ -1033,16 +1157,17 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         badge: "Run",
         meta: event.mode === "episode" ? `Episodio ${event.episode_date || ""}` : "Pipeline semanal",
         copy: event.mode === "episode"
-          ? `Buscando ${event.target || 5} reseñas nuevas y hasta ${event.archive_target || event.target || 5} antiguas relevantes.`
+          ? `Buscando ${event.target || 5} reseñas nuevas relevantes.`
           : "Se ha puesto en marcha una nueva ejecución.",
       });
     }
     if (event.event === "run_failed") {
       runFinished = true;
       progressState.failed = true;
+      setRunActive(false);
       setText("live-stage", "Error");
       setText("status", event.message || "Falló la ejecución. Revisa el log.");
-      if (progressTimer) clearInterval(progressTimer);
+      stopProgressPolling();
       pushLimited(progressState.recentActivity, {
         title: "Ejecución fallida",
         badge: "Error",
@@ -1050,6 +1175,30 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
         copy: event.message || "La ejecución se interrumpió antes de terminar.",
       });
       renderLiveDashboard();
+    }
+    if (event.event === "run_cancel_requested") {
+      setRunActive(true, { stopping: true });
+      setText("live-stage", "Deteniendo búsqueda");
+      setText("status", "Esperando a que termine el proceso activo...");
+    }
+    if (event.event === "run_cancelled") {
+      runFinished = true;
+      progressState.cancelled = true;
+      progressState.failed = false;
+      progressState.currentQuery = "";
+      progressState.currentRegion = "";
+      setRunActive(false);
+      setText("live-stage", "Detenida");
+      setText("live-eta", "Detenida");
+      setText("live-place", "-");
+      setText("status", "Búsqueda detenida. Ya puedes iniciar una nueva.");
+      stopProgressPolling();
+      pushLimited(progressState.recentActivity, {
+        title: "Búsqueda detenida",
+        badge: "Stop",
+        meta: "Cancelada por el usuario",
+        copy: "La ejecución se interrumpió y el sistema está listo para otra búsqueda.",
+      });
     }
     if (event.event === "process_output" && event.stream === "stderr") {
       const text = String(event.text || "");
@@ -1104,15 +1253,44 @@ function applyProgressPayload(payload, { showTransientAlerts = true } = {}) {
     }
     renderLiveDashboard();
   });
+  if (payload.run) {
+    const serverRunActive = Boolean(payload.run.active);
+    if (!serverRunActive && !runFinished) {
+      runFinished = true;
+      progressState.cancelled = true;
+      progressState.failed = false;
+      progressState.currentQuery = "";
+      progressState.currentRegion = "";
+      setText("live-stage", "Detenida");
+      setText("live-eta", "Detenida");
+      setText("live-place", "-");
+      setText("status", "La búsqueda anterior ya no está activa. Puedes iniciar una nueva.");
+      stopProgressPolling();
+      renderLiveDashboard();
+    }
+    setRunActive(serverRunActive && !runFinished, {
+      stopping: Boolean(payload.run.stopping) && !runFinished,
+    });
+  }
 }
 
 async function pollProgress() {
-  if (!has("live-stage")) return;
-  const res = await fetch(`/api/progress?offset=${progressOffset}`);
-  if (!res.ok) return;
-  const payload = await res.json();
-  progressOffset = payload.next_offset || progressOffset;
-  applyProgressPayload(payload);
+  if (!has("live-stage") || progressPollInFlight) return;
+  const generation = progressPollGeneration;
+  const requestedOffset = progressOffset;
+  progressPollInFlight = true;
+  try {
+    const res = await fetch(`/api/progress?offset=${requestedOffset}`);
+    if (!res.ok || generation !== progressPollGeneration) return;
+    const payload = await res.json();
+    if (generation !== progressPollGeneration) return;
+    const nextOffset = Number(payload.next_offset);
+    if (Number.isFinite(nextOffset)) progressOffset = nextOffset;
+    applyProgressPayload(payload);
+    await syncTopPlaceStatuses();
+  } finally {
+    progressPollInFlight = false;
+  }
 }
 
 async function bootstrapProgress() {
@@ -1120,12 +1298,14 @@ async function bootstrapProgress() {
   const res = await fetch("/api/progress?offset=0");
   if (!res.ok) return;
   const payload = await res.json();
-  progressOffset = payload.next_offset || 0;
-  runFinished = true;
+  const nextOffset = Number(payload.next_offset);
+  progressOffset = Number.isFinite(nextOffset) ? nextOffset : 0;
+  runFinished = !Boolean(payload.run?.active);
   closeNoResults();
   applyProgressPayload(payload, { showTransientAlerts: false });
+  await syncTopPlaceStatuses();
   progressBootstrapped = true;
-  if (!runFinished && !progressTimer) progressTimer = setInterval(pollProgress, 1200);
+  if (!runFinished && progressTimer === null) startProgressPolling();
 }
 
 function renderImportedImagesState() {
@@ -1169,6 +1349,97 @@ function handlePastedImages(files) {
   appendImportedImageFiles(normalized);
   setText("import-review-result", "Capturas pegadas correctamente. Ya puedes importarlas.");
   return true;
+}
+
+function renderUrlImportState(payload) {
+  const button = byId("import-review-url-button");
+  const running = payload.status === "running";
+  if (button) {
+    button.disabled = running;
+    button.textContent = running ? "Analizando sitio..." : "Analizar reseña y sitio";
+  }
+  setText("import-review-url-result", [payload.message, payload.warning].filter(Boolean).join(" "));
+  const link = byId("import-place-link");
+  if (link) {
+    link.hidden = !payload.detail_url;
+    if (payload.detail_url) link.href = payload.detail_url;
+  }
+}
+
+function scheduleUrlImportPoll() {
+  if (urlImportTimer !== null) clearTimeout(urlImportTimer);
+  urlImportTimer = setTimeout(pollUrlImport, 1200);
+}
+
+async function pollUrlImport() {
+  urlImportTimer = null;
+  const jobId = urlImportJobId;
+  if (!jobId) return;
+  try {
+    const response = await fetch(`/api/import-review-status?id=${encodeURIComponent(jobId)}`);
+    const payload = await response.json();
+    if (jobId !== urlImportJobId) return;
+    if (!response.ok) {
+      renderUrlImportState({ status: "failed", message: payload.message || "No se pudo recuperar el análisis." });
+      urlImportJobId = "";
+      return;
+    }
+    renderUrlImportState(payload);
+    if (payload.status === "running") scheduleUrlImportPoll();
+  } catch (error) {
+    if (jobId !== urlImportJobId) return;
+    setText("import-review-url-result", "Reconectando con el análisis del sitio...");
+    scheduleUrlImportPoll();
+  }
+}
+
+async function restoreUrlImport() {
+  if (!has("import-review-url-button")) return;
+  try {
+    const response = await fetch("/api/import-review-status");
+    if (!response.ok) return;
+    const payload = await response.json();
+    if (!payload.id || urlImportJobId) return;
+    urlImportJobId = payload.id;
+    renderUrlImportState(payload);
+    if (payload.status === "running") scheduleUrlImportPoll();
+  } catch (error) {
+    // A fresh import can still be started when there is no previous job to restore.
+  }
+}
+
+async function importReviewUrl() {
+  if (byId("import-review-url-button")?.disabled) return;
+  const reviewUrl = fieldValue("import-review-url").trim();
+  if (!reviewUrl) {
+    setText("import-review-url-result", "Pega el enlace de la reseña antes de analizar el sitio.");
+    return;
+  }
+  renderUrlImportState({ status: "running", message: "Preparando el análisis del sitio..." });
+  try {
+    const response = await fetch("/api/import-review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        review_url: reviewUrl,
+        submitted_by: fieldValue("import-review-submitted-by").trim(),
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      renderUrlImportState({ status: "failed", message: payload.message || "No se pudo iniciar el análisis." });
+      if (response.status === 409) {
+        urlImportJobId = "";
+        await restoreUrlImport();
+      }
+      return;
+    }
+    urlImportJobId = payload.id;
+    renderUrlImportState(payload);
+    scheduleUrlImportPoll();
+  } catch (error) {
+    renderUrlImportState({ status: "failed", message: "Error de red al iniciar el análisis del sitio." });
+  }
 }
 
 async function importReview() {
@@ -1226,6 +1497,7 @@ function bindEvents() {
   byId("scoring_model")?.addEventListener("change", () => updateOpenAIExecutionControls({ resetDefaults: true }));
   byId("scoring_reasoning_effort")?.addEventListener("change", updateOpenAIExecutionControls);
   byId("run-weekly")?.addEventListener("click", runWeekly);
+  byId("stop-run")?.addEventListener("click", stopRun);
   byId("load-episode-observances")?.addEventListener("click", loadEpisodeObservances);
   byId("run-episode")?.addEventListener("click", runEpisodeSearch);
   byId("episode-date")?.addEventListener("change", clearEpisodeObservances);
@@ -1237,11 +1509,12 @@ function bindEvents() {
   });
   byId("run-dry")?.addEventListener("click", runDryRun);
   byId("import-review-button")?.addEventListener("click", importReview);
+  byId("import-review-url-button")?.addEventListener("click", importReviewUrl);
   byId("clear-import-images")?.addEventListener("click", clearImportedImages);
   byId("import-review-url")?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      importReview();
+      importReviewUrl();
     }
   });
   byId("import-paste-zone")?.addEventListener("paste", (event) => {
@@ -1267,9 +1540,11 @@ function bindEvents() {
   byId("no-results-modal")?.addEventListener("click", (event) => {
     if (event.target === byId("no-results-modal")) closeNoResults();
   });
+  window.addEventListener("focus", syncTopPlaceStatuses);
 }
 
 bindEvents();
+restoreUrlImport();
 loadConfig().then(() => {
   if (has("live-stage")) {
     resetLiveProgress();

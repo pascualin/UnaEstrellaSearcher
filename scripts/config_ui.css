@@ -210,7 +210,7 @@ main {
       font-family: "Fraunces", serif;
     }
     label { display: block; font-weight: 600; margin: 10px 0 6px; color: var(--muted); }
-    input[type="text"], input[type="date"], input[type="number"], textarea, select {
+    input[type="text"], input[type="url"], input[type="date"], input[type="number"], textarea, select {
       width: 100%;
       padding: 10px 12px;
       border-radius: 12px;
@@ -514,6 +514,7 @@ main {
   line-height: 1.35;
 }
 .app-page input[type="text"],
+.app-page input[type="url"],
 .app-page input[type="date"],
 .app-page input[type="number"],
 .app-page textarea,
@@ -544,6 +545,7 @@ main {
   line-height: 1.4;
 }
 .app-page input[type="text"]:focus,
+.app-page input[type="url"]:focus,
 .app-page input[type="number"]:focus,
 .app-page textarea:focus,
 .app-page select:focus {
@@ -788,6 +790,30 @@ main {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+.app-page .run-hero-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+.app-page .run-stop-button {
+  min-height: 36px;
+  padding: 7px 12px;
+  border: 1px solid #a23f3f;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #8b3030;
+  font-size: 13px;
+  font-weight: 700;
+}
+.app-page .run-stop-button:hover:not(:disabled) {
+  background: #f8e8e6;
+}
+.app-page .run-stop-button:disabled {
+  border-color: rgba(17, 25, 34, 0.12);
+  color: #8a949b;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
 .app-page .run-kpi-grid,
 .app-page .run-metric-grid {
   display: grid;
@@ -917,6 +943,33 @@ main {
   font-weight: 800;
   color: #111922;
 }
+.app-page .run-live-place-item.is-processed {
+  background: #f1f6f3;
+  border-color: rgba(35, 107, 92, 0.28);
+}
+.app-page .run-live-item-heading-meta {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+.app-page .run-place-status {
+  padding: 4px 7px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+.app-page .run-place-status.is-processed {
+  background: #236b5c;
+  color: #ffffff;
+}
+.app-page .run-place-status.is-pending {
+  background: #fff3d6;
+  border-color: #e4bd62;
+  color: #684500;
+}
 .app-page .run-empty-state {
   padding: 18px 14px;
   border-radius: 12px;
@@ -952,6 +1005,11 @@ main {
   .app-page .run-live-item-head {
     grid-template-columns: 1fr;
     display: grid;
+  }
+  .app-page .run-hero-actions {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
   .app-page .run-kpi-grid,
   .app-page .run-metric-grid,
@@ -1579,6 +1637,14 @@ body {
   border-color: rgba(15, 92, 84, 0.44);
   box-shadow: 0 8px 22px rgba(15, 24, 32, 0.08);
   outline: none;
+  text-decoration: none;
+}
+.app-page .place-result-card.is-processed {
+  border-left: 5px solid #2f7b63;
+  background: #f3f8f5;
+}
+.app-page .place-result-card.is-unprocessed {
+  border-left: 5px solid #c9952e;
 }
 .app-page .place-result-score,
 .place-detail-best-score {
@@ -1617,13 +1683,33 @@ body {
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
-.app-page .place-result-heading > span,
+.app-page .place-result-heading-meta > span,
 .app-page .place-result-copy > p {
   color: #64717b;
 }
-.app-page .place-result-heading > span {
+.app-page .place-result-heading-meta > span {
   flex: 0 0 auto;
   font-size: 13px;
+}
+.app-page .place-result-heading-meta {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+.app-page .place-status-badge {
+  border-radius: 5px;
+  font-size: 11px;
+  padding: 4px 7px;
+}
+.app-page .place-status-badge.is-processed {
+  background: #236b5c !important;
+  color: #ffffff !important;
+}
+.app-page .place-status-badge.is-pending {
+  background: #fff3d6 !important;
+  border: 1px solid #e4bd62;
+  color: #684500 !important;
 }
 .app-page .place-result-copy > p {
   margin: 7px 0 12px;
@@ -1740,6 +1826,9 @@ body {
   background: #ffffff;
   color: #16202a;
   font-weight: 600;
+}
+#import-place-link[hidden] {
+  display: none;
 }
 .place-detail-feedback {
   min-height: 22px;
@@ -1936,9 +2025,12 @@ body {
   .app-page .place-result-heading {
     display: block;
   }
-  .app-page .place-result-heading > span {
+  .app-page .place-result-heading-meta {
     display: block;
     margin-top: 4px;
+  }
+  .app-page .place-result-heading-meta > * + * {
+    margin-left: 6px;
   }
   .place-detail-title-row,
   .place-detail-toolbar,

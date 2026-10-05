@@ -123,6 +123,109 @@ class PlaceWorkflowTests(unittest.TestCase):
         assert detail is not None
         self.assertFalse(detail["place"]["processed"])
 
+    def test_place_statuses_resolve_place_and_data_ids(self) -> None:
+        self.assertTrue(config_ui._set_place_processed("data-1", True))
+
+        statuses = config_ui._fetch_place_statuses(
+            ["place-1", "data-1", "place-2", "missing", "data-1"]
+        )
+
+        self.assertEqual(
+            statuses,
+            {"place-1": True, "data-1": True, "place-2": False},
+        )
+
+    def test_marking_place_processed_keeps_detail_open(self) -> None:
+        detail_html = (config_ui.ROOT / "scripts" / "place_detail.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn('window.location.assign("/db")', detail_html)
+        self.assertIn("Sitio marcado como procesado.", detail_html)
+
+    def test_database_cards_show_processed_and_pending_badges(self) -> None:
+        db_html = (config_ui.ROOT / "scripts" / "db_view.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('processed ? "PROCESADO" : "PENDIENTE"', db_html)
+        self.assertIn('processed ? "is-processed" : "is-unprocessed"', db_html)
+
+    def test_processed_places_are_excluded_from_automated_storage_queries(self) -> None:
+        self.assertTrue(config_ui._set_place_processed("place-1", True))
+        with sqlite3.connect(self.data_dir / "humor_reviews.db") as conn:
+            conn.execute(
+                "UPDATE reviews SET humor_notes='Parse failure' WHERE review_id='middle'"
+            )
+
+        candidates = self.storage.fetch_candidates(0, allow_repeat=True)
+        rescore = self.storage.fetch_reviews_needing_rescore()
+
+        self.assertEqual([review.review_id for review in candidates], ["other"])
+        self.assertEqual(rescore, [])
+        self.assertEqual(self.storage.get_place_ids(), ["data-2"])
+        self.assertEqual(
+            set(self.storage.get_place_ids(include_processed=True)),
+            {"data-1", "data-2"},
+        )
+        self.assertEqual(
+            self.storage.get_processed_place_ids(),
+            {"place-1", "data-1"},
+        )
+
+    @patch("scripts.config_ui.score_review")
+    @patch("scripts.config_ui._extract_review_from_images")
+    def test_image_import_does_not_score_a_processed_place(self, extract, score) -> None:
+        place_id = config_ui._manual_place_id("Sitio procesado", "")
+        self.storage.upsert_place(
+            Place(
+                place_id,
+                place_id,
+                "Sitio procesado",
+                "Madrid",
+                "manual_image",
+                1,
+                None,
+                "manual_image",
+            )
+        )
+        self.assertTrue(config_ui._set_place_processed(place_id, True))
+        extract.return_value = {
+            "place_name": "Sitio procesado",
+            "reviewer_name": "Autor",
+            "rating": 1,
+            "date": "hoy",
+            "review_text": "Texto",
+            "owner_reply_text": "",
+            "owner_reply_date": "",
+            "place_address": "Madrid",
+            "review_url": "",
+        }
+
+        with self.assertRaisesRegex(ValueError, "ya está marcado como procesado"):
+            config_ui._import_review_from_images([{"bytes": PNG_BYTES}])
+
+        score.assert_not_called()
+
+    @patch("scripts.config_ui.score_review")
+    @patch("scripts.config_ui._find_review_in_serpapi")
+    @patch("scripts.config_ui._resolve_place_data_id")
+    def test_url_import_stops_before_fetching_a_processed_place(
+        self,
+        resolve_place,
+        find_review,
+        score,
+    ) -> None:
+        self.assertTrue(config_ui._set_place_processed("place-1", True))
+        resolve_place.return_value = ("https://example.com/review", "data-1")
+
+        with patch.dict(config_ui.os.environ, {"SERPAPI_API_KEY": "test-key"}):
+            with self.assertRaisesRegex(ValueError, "ya está marcado como procesado"):
+                config_ui._import_review_from_url("https://example.com/review")
+
+        find_review.assert_not_called()
+        score.assert_not_called()
+
     def test_date_sort_uses_latest_review_in_each_site(self) -> None:
         with sqlite3.connect(self.data_dir / "humor_reviews.db") as conn:
             conn.execute("UPDATE reviews SET updated_at='2024-01-01T00:00:00' WHERE place_id IN ('place-1', 'data-1')")

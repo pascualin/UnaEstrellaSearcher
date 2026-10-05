@@ -83,9 +83,10 @@ def _serpapi_maps_search(
         "type": "search",
         "q": query,
         "hl": hl,
-        "gl": gl,
         "api_key": api_key,
     }
+    if gl:
+        params["gl"] = gl
     if no_cache:
         params["no_cache"] = "true"
     if location:
@@ -107,8 +108,11 @@ def _serpapi_maps_search(
         status = getattr(exc.response, "status_code", None)
         if status == 400 and location and _retry_without_location:
             # Some generic locations (e.g. country-only) are rejected by SerpApi.
+            fallback_query = query
+            if location.casefold() not in query.casefold():
+                fallback_query = f"{query} {location}"
             return _serpapi_maps_search(
-                query=query,
+                query=fallback_query,
                 api_key=api_key,
                 hl=hl,
                 gl=gl,
@@ -206,7 +210,7 @@ def discover_places(
     for region in regions:
         for category in categories:
             query_category = _normalize_category(category)
-            effective_location = region or _country_search_term(discovery.country)
+            effective_location = region or country_search_term(discovery.country)
             query = _build_query(query_category, discovery.name_contains, effective_location)
             try:
                 results, location_used = _serpapi_maps_search(
@@ -458,7 +462,7 @@ def _progress_category_label(category: str, query: str) -> str:
     return "búsqueda general"
 
 
-def _country_search_term(country: str) -> str:
+def country_search_term(country: str) -> str:
     code = str(country or "").strip().upper()
     aliases = {
         "US": "United States",

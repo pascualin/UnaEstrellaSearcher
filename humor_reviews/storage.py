@@ -481,6 +481,11 @@ class Storage:
                     SELECT * FROM reviews
                     WHERE humor_score >= ?
                       AND LOWER(COALESCE(status, '')) NOT IN ('rejected', 'rechazada', 'discarded')
+                      AND NOT EXISTS (
+                          SELECT 1 FROM places p
+                          WHERE COALESCE(p.processed_at, '') <> ''
+                            AND (p.place_id = reviews.place_id OR p.data_id = reviews.place_id)
+                      )
                     ORDER BY humor_score DESC
                     """,
                     (humor_threshold,),
@@ -492,6 +497,11 @@ class Storage:
                     WHERE humor_score >= ?
                       AND LOWER(COALESCE(status, '')) IN ('', 'new')
                       AND review_id NOT IN (SELECT review_id FROM shortlist)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM places p
+                          WHERE COALESCE(p.processed_at, '') <> ''
+                            AND (p.place_id = reviews.place_id OR p.data_id = reviews.place_id)
+                      )
                     ORDER BY humor_score DESC
                     """,
                     (humor_threshold,),
@@ -567,10 +577,17 @@ class Storage:
             rows = conn.execute(
                 """
                 SELECT * FROM reviews
-                WHERE tags LIKE '%llm_error%'
-                   OR humor_notes LIKE 'LLM error:%'
-                   OR humor_notes = 'Parse failure'
-                   OR (humor_score = 0 AND tags = 'misc')
+                WHERE (
+                       tags LIKE '%llm_error%'
+                    OR humor_notes LIKE 'LLM error:%'
+                    OR humor_notes = 'Parse failure'
+                    OR (humor_score = 0 AND tags = 'misc')
+                )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM places p
+                      WHERE COALESCE(p.processed_at, '') <> ''
+                        AND (p.place_id = reviews.place_id OR p.data_id = reviews.place_id)
+                  )
                 ORDER BY updated_at DESC
                 """
             ).fetchall()
@@ -609,10 +626,28 @@ class Storage:
             ).fetchone()
             return row is not None
 
-    def get_place_ids(self) -> list[str]:
+    def get_place_ids(self, include_processed: bool = False) -> list[str]:
         with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute("SELECT place_id, data_id FROM places").fetchall()
+            where = "" if include_processed else "WHERE COALESCE(processed_at, '') = ''"
+            rows = conn.execute(
+                f"SELECT place_id, data_id FROM places {where}"
+            ).fetchall()
             return [row[1] or row[0] for row in rows]
+
+    def get_processed_place_ids(self) -> set[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT place_id, data_id FROM places
+                WHERE COALESCE(processed_at, '') <> ''
+                """
+            ).fetchall()
+        return {
+            str(identifier)
+            for row in rows
+            for identifier in row
+            if str(identifier or "").strip()
+        }
 
     def get_place_map(self) -> dict[str, Place]:
         with sqlite3.connect(self.db_path) as conn:

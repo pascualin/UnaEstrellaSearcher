@@ -28,7 +28,23 @@ class CelebrationStrategy:
 
 
 LOCAL_QUERY_RULES = [
-    (("pulpo",), ("restaurante de pulpo", "marisquería")),
+    (
+        ("pulpo",),
+        (
+            "restaurante de pulpo",
+            "pulpería",
+            "marisquería",
+            "restaurante gallego",
+            "pulpo a la gallega",
+            "restaurante de marisco",
+            "mercado de marisco",
+            "taller de cocina de pulpo",
+            "festival del pulpo",
+            "feria del pulpo",
+            "degustación de pulpo",
+            "restaurante especializado en pulpo",
+        ),
+    ),
     (("dislexia",), ("asociación de dislexia", "centro de apoyo a la dislexia")),
     (("vision", "vista"), ("óptica", "clínica oftalmológica")),
     (("podolog",), ("podólogo", "clínica de podología")),
@@ -39,7 +55,41 @@ LOCAL_QUERY_RULES = [
     (("libro", "bibliotec"), ("librería", "biblioteca")),
     (("musica",), ("sala de conciertos", "tienda de música")),
     (("turismo", "viaje"), ("atracción turística", "visita guiada")),
+    (
+        ("conflicto", "mediacion"),
+        (
+            "centro de mediación",
+            "mediador",
+            "terapia de pareja",
+            "abogado de familia",
+            "servicio de conciliación",
+            "arbitraje y mediación",
+        ),
+    ),
 ]
+GENERIC_QUERY_TEMPLATES = (
+    "{topic}",
+    "centro de {topic}",
+    "asociación de {topic}",
+    "taller de {topic}",
+    "escuela de {topic}",
+    "festival de {topic}",
+    "tienda de {topic}",
+    "actividad de {topic}",
+    "especialista en {topic}",
+    "mercado de {topic}",
+    "fundación de {topic}",
+    "restaurante de {topic}",
+)
+MUSEUM_COMPATIBLE_TOPICS = (
+    "museo",
+    "arte",
+    "historia",
+    "ciencia",
+    "espacio",
+    "astronom",
+    "patrimonio",
+)
 UNSUITABLE_TOPIC_MARKERS = ("sindrome", "deficiencia")
 SENSITIVE_TOPIC_MARKERS = (
     "cancer",
@@ -56,6 +106,7 @@ SENSITIVE_TOPIC_MARKERS = (
 def build_celebration_strategy(
     observances: list[dict[str, str]],
     settings: ScoringSettings,
+    search_limit: int = 12,
 ) -> CelebrationStrategy:
     searchable_observances, prediscarded_observances = _partition_searchable_observances(
         observances
@@ -67,6 +118,7 @@ def build_celebration_strategy(
             searchable_observances,
             "Planificación local para el proveedor elegido.",
             prediscarded_observances,
+            search_limit,
         )
 
     if not searchable_observances:
@@ -74,6 +126,7 @@ def build_celebration_strategy(
             [],
             "No hay celebraciones adecuadas para buscar lugares.",
             prediscarded_observances,
+            search_limit,
         )
 
     try:
@@ -92,6 +145,8 @@ def build_celebration_strategy(
                         "interaccion humana extrana o actividades propensas a anecdotas absurdas. "
                         "Evita ecommerce generico, tiendas online, academias genericas, "
                         "servicios demasiado tecnicos y negocios donde lo normal sean solo quejas de envio o soporte. "
+                        "Cada lugar debe estar directamente relacionado con la celebracion, no solo con una asociacion lateral. "
+                        "No propongas museos salvo que la celebracion trate explicitamente de museos, arte, historia, ciencia, espacio o patrimonio. "
                         "Descarta celebraciones sensibles relacionadas con violencia, victimas, suicidio, "
                         "enfermedades graves, duelo o discapacidad: no deben usarse para buscar humor. "
                         "Devuelve SOLO JSON valido."
@@ -108,10 +163,13 @@ def build_celebration_strategy(
                         "- notes: razon corta\n"
                         "- searches: array de maximo 12 objetos con query, region y rationale\n"
                         "Las queries deben ser cortas, aptas para Google Maps y centradas en Espana.\n"
+                        "No incluyas ciudades, regiones ni paises dentro de query; el ambito geografico se aplicara despues.\n"
                         "Incluye al menos una query para cada celebracion seleccionada antes de "
                         "anadir queries adicionales para cualquiera de ellas.\n"
-                        "Prefiere categorias y consultas como atracciones, talleres, experiencias, "
-                        "museos peculiares, restaurantes tematicos, escape rooms, mercadillos, "
+                        "Prefiere categorias y consultas directamente vinculadas con la celebracion, como talleres, "
+                        "restaurantes especializados, mercados, asociaciones, comercios o servicios presenciales. "
+                        "No uses asociaciones tematicas amplias: por ejemplo, para el Dia del Pulpo no busques museos del mar. "
+                        "Puedes usar escape rooms, mercadillos, "
                         "parques tematicos, centros de ocio o lugares fisicos donde una mala experiencia pueda ser ridicula.\n"
                         "No propongas ecommerce, tiendas de regalos online, academias genericas, "
                         "software, soporte tecnico ni negocios dominados por incidencias logisticas.\n"
@@ -175,8 +233,14 @@ def build_celebration_strategy(
             searchable_observances,
             f"Planificación local porque OpenAI no estaba disponible ({exc.__class__.__name__}).",
             prediscarded_observances,
+            search_limit,
         )
 
+    selected_observances = [
+        str(item).strip()
+        for item in data.get("selected_observances", [])
+        if str(item).strip()
+    ]
     searches = [
         SearchPlan(
             query=str(item.get("query") or "").strip(),
@@ -185,9 +249,13 @@ def build_celebration_strategy(
         )
         for item in data.get("searches", [])
         if str(item.get("query") or "").strip()
+        and _search_is_directly_related(
+            str(item.get("query") or ""),
+            selected_observances,
+        )
     ]
-    return CelebrationStrategy(
-        selected_observances=[str(item).strip() for item in data.get("selected_observances", []) if str(item).strip()],
+    return expand_search_plans(CelebrationStrategy(
+        selected_observances=selected_observances,
         discarded_observances=list(
             dict.fromkeys(
                 prediscarded_observances
@@ -200,13 +268,14 @@ def build_celebration_strategy(
         ),
         notes=str(data.get("notes") or "").strip(),
         searches=searches,
-    )
+    ), limit=search_limit)
 
 
 def _build_local_strategy(
     observances: list[dict[str, str]],
     notes: str,
     discarded_observances: list[str] | None = None,
+    search_limit: int = 12,
 ) -> CelebrationStrategy:
     names = list(
         dict.fromkeys(
@@ -227,7 +296,7 @@ def _build_local_strategy(
                 queries = candidates
                 break
         if not queries:
-            queries = (topic, f"museo {topic}")
+            queries = (topic, f"centro de {topic}")
         query_groups.append((name, queries))
 
     max_queries_per_observance = max(
@@ -250,16 +319,86 @@ def _build_local_strategy(
                     rationale=f"Búsqueda relacionada con {name}.",
                 )
             )
-            if len(searches) >= 12:
+            if len(searches) >= search_limit:
                 break
-        if len(searches) >= 12:
+        if len(searches) >= search_limit:
             break
-    return CelebrationStrategy(
+    return expand_search_plans(CelebrationStrategy(
         selected_observances=names,
         discarded_observances=list(discarded_observances or []),
         notes=notes,
         searches=searches,
+    ), limit=search_limit)
+
+
+def expand_search_plans(
+    strategy: CelebrationStrategy,
+    limit: int = 12,
+) -> CelebrationStrategy:
+    limit = max(0, limit)
+    searches: list[SearchPlan] = []
+    seen_queries: set[str] = set()
+
+    def add(plan: SearchPlan) -> None:
+        normalized_query = _normalize(plan.query)
+        if not normalized_query or normalized_query in seen_queries or len(searches) >= limit:
+            return
+        seen_queries.add(normalized_query)
+        searches.append(plan)
+
+    for search in strategy.searches:
+        add(search)
+
+    query_groups = [
+        (name, _search_candidates_for_observance(name))
+        for name in strategy.selected_observances
+    ]
+    max_candidates = max((len(candidates) for _, candidates in query_groups), default=0)
+    for query_index in range(max_candidates):
+        for name, candidates in query_groups:
+            if query_index >= len(candidates):
+                continue
+            add(
+                SearchPlan(
+                    query=candidates[query_index],
+                    region="Spain",
+                    rationale=f"Búsqueda adicional relacionada con {name}.",
+                )
+            )
+            if len(searches) >= limit:
+                break
+        if len(searches) >= limit:
+            break
+
+    return CelebrationStrategy(
+        selected_observances=strategy.selected_observances,
+        discarded_observances=strategy.discarded_observances,
+        notes=strategy.notes,
+        searches=searches,
     )
+
+
+def _search_candidates_for_observance(name: str) -> list[str]:
+    topic = _observance_topic(name)
+    normalized_topic = _normalize(topic)
+    candidates: list[str] = []
+    for keywords, rule_candidates in LOCAL_QUERY_RULES:
+        if any(keyword in normalized_topic for keyword in keywords):
+            candidates.extend(rule_candidates)
+            break
+    candidates.extend(
+        template.format(topic=topic)
+        for template in GENERIC_QUERY_TEMPLATES
+    )
+    return list(dict.fromkeys(candidate.strip() for candidate in candidates if candidate.strip()))
+
+
+def _search_is_directly_related(query: str, observances: list[str]) -> bool:
+    normalized_query = _normalize(query)
+    if "museo" not in normalized_query:
+        return True
+    normalized_observances = " ".join(_normalize(name) for name in observances)
+    return any(marker in normalized_observances for marker in MUSEUM_COMPATIBLE_TOPICS)
 
 
 def _partition_searchable_observances(
@@ -297,7 +436,7 @@ def _observance_topic(name: str) -> str:
     topic = re.sub(
         r"^(?:día|semana|noche|jornada)\s+"
         r"(?:(?:internacional|mundial|global|europe[oa]|nacional)\s+)*"
-        r"(?:(?:de|del|de la|de los|de las)\s+)?",
+        r"(?:(?:de los|de las|de la|del|de)\s+)?",
         "",
         str(name or "").strip(),
         flags=re.IGNORECASE,
@@ -319,6 +458,7 @@ def _is_openai_quota_error(exc: Exception) -> bool:
 def build_celebration_strategy_from_text(
     celebrations_text: str,
     settings: ScoringSettings,
+    search_limit: int = 12,
 ) -> CelebrationStrategy:
     observances = [
         {
@@ -330,7 +470,7 @@ def build_celebration_strategy_from_text(
         }
         for item in _split_celebrations_text(celebrations_text)
     ]
-    return build_celebration_strategy(observances, settings)
+    return build_celebration_strategy(observances, settings, search_limit=search_limit)
 
 
 def _extract_message_content(response: Any) -> str:

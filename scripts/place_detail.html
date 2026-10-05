@@ -205,11 +205,7 @@
         if (!response.ok) throw new Error(payload.message || "No se pudo actualizar el sitio.");
         detail.place.processed = nextProcessed;
         detail.place.processed_at = nextProcessed ? new Date().toISOString() : "";
-        if (nextProcessed) {
-          window.location.assign("/db");
-          return;
-        }
-        feedback.textContent = payload.message || "Sitio reabierto.";
+        feedback.textContent = payload.message || (nextProcessed ? "Sitio marcado como procesado." : "Sitio reabierto.");
       } catch (error) {
         feedback.textContent = error.message || "No se pudo actualizar el sitio.";
       } finally {

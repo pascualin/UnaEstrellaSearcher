@@ -9,6 +9,7 @@ import os
 import re
 import socket
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -16,7 +17,8 @@ from datetime import date, datetime
 from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
+from uuid import uuid4
 
 from openai import OpenAI
 import requests
@@ -24,7 +26,7 @@ import yaml
 
 from humor_reviews.celebration_calendar import fetch_observances
 from humor_reviews.celebration_strategy import observance_exclusion_reason
-from humor_reviews.collect import _serpapi_reviews
+from humor_reviews.collect import RawReview, _serpapi_reviews, collect_reviews
 from humor_reviews.humor import score_review
 from humor_reviews.notion_sync import NotionSyncError, append_review_image, sync_place_reviews_page
 from humor_reviews.openai_models import openai_model_catalog
@@ -56,10 +58,9 @@ REVIEW_IMPORT_SORT_ORDERS = [
 ]
 GOOGLE_REVIEW_HOSTS = {
     "google.com",
-    "www.google.com",
     "maps.google.com",
-    "www.maps.google.com",
     "maps.app.goo.gl",
+    "goo.gl",
 }
 IMAGE_IMPORT_MAX_BYTES = 12 * 1024 * 1024
 IMAGE_IMPORT_MAX_FILES = 8
@@ -70,6 +71,14 @@ NOTION_CAPTURE_TOTAL_MAX_BYTES = 64 * 1024 * 1024
 OPENAI_MODEL_CACHE_TTL_SECONDS = 300
 _openai_model_cache: dict[str, Any] = {"key": "", "expires_at": 0.0, "payload": None}
 _place_metadata_lookups: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
+_active_run_lock = threading.Lock()
+_active_run: dict[str, Any] = {
+    "process": None,
+    "mode": "",
+    "cancel_requested": False,
+}
+_review_import_lock = threading.Lock()
+_review_import_job: dict[str, Any] = {}
 
 
 def _load_env(path: Path) -> None:
@@ -171,6 +180,90 @@ def _append_progress_log(path: Path, event: str, payload: dict) -> None:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError:
         return
+
+
+def _active_run_status() -> dict[str, Any]:
+    with _active_run_lock:
+        process = _active_run.get("process")
+        active = process is not None and process.poll() is None
+        return {
+            "active": active,
+            "mode": str(_active_run.get("mode") or "") if active else "",
+            "stopping": bool(_active_run.get("cancel_requested")) if active else False,
+        }
+
+
+def _monitor_run_process(process, mode: str, log_path: Path) -> None:
+    stdout, stderr = process.communicate()
+    if stdout:
+        _append_progress_log(log_path, "process_output", {"stream": "stdout", "text": stdout})
+    if stderr:
+        _append_progress_log(log_path, "process_output", {"stream": "stderr", "text": stderr})
+
+    with _active_run_lock:
+        is_current = _active_run.get("process") is process
+        cancelled = is_current and bool(_active_run.get("cancel_requested"))
+        if is_current:
+            _active_run.update(
+                {"process": None, "mode": "", "cancel_requested": False}
+            )
+
+    if cancelled:
+        _append_progress_log(log_path, "run_cancelled", {"mode": mode})
+    elif process.returncode != 0:
+        _append_progress_log(
+            log_path,
+            "run_failed",
+            {
+                "returncode": process.returncode,
+                "message": _friendly_process_failure(stderr or ""),
+            },
+        )
+
+
+def _start_run_process(command: list[str], mode: str, log_path: Path) -> bool:
+    with _active_run_lock:
+        current = _active_run.get("process")
+        if current is not None and current.poll() is None:
+            return False
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("", encoding="utf-8")
+        env = os.environ.copy()
+        env["PROGRESS_LOG"] = str(log_path)
+        process = subprocess.Popen(
+            command,
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        _active_run.update(
+            {"process": process, "mode": mode, "cancel_requested": False}
+        )
+
+    threading.Thread(
+        target=_monitor_run_process,
+        args=(process, mode, log_path),
+        daemon=True,
+    ).start()
+    return True
+
+
+def _stop_active_run(log_path: Path) -> bool:
+    with _active_run_lock:
+        process = _active_run.get("process")
+        if process is None or process.poll() is not None:
+            _active_run.update(
+                {"process": None, "mode": "", "cancel_requested": False}
+            )
+            return False
+        mode = str(_active_run.get("mode") or "")
+        _active_run["cancel_requested"] = True
+        process.terminate()
+
+    _append_progress_log(log_path, "run_cancel_requested", {"mode": mode})
+    return True
 
 
 def _friendly_process_failure(stderr: str) -> str:
@@ -677,6 +770,45 @@ def _fetch_review_statuses(review_ids: List[str]) -> Dict[str, str]:
             tuple(normalized_ids),
         ).fetchall()
     return {str(row["review_id"]): _normalize_status(row["status"]) for row in rows}
+
+
+def _fetch_place_statuses(place_ids: List[str]) -> Dict[str, bool]:
+    normalized_ids: List[str] = []
+    seen: set[str] = set()
+    for place_id in place_ids:
+        value = str(place_id or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized_ids.append(value)
+    if not normalized_ids:
+        return {}
+
+    db_path = _db_path()
+    if not db_path.exists():
+        return {}
+
+    placeholders = ", ".join("?" for _ in normalized_ids)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_place_columns(conn)
+        rows = conn.execute(
+            f"""
+            SELECT place_id, data_id, processed_at
+            FROM places
+            WHERE place_id IN ({placeholders}) OR data_id IN ({placeholders})
+            """,
+            tuple(normalized_ids) + tuple(normalized_ids),
+        ).fetchall()
+
+    statuses: Dict[str, bool] = {}
+    requested = set(normalized_ids)
+    for row in rows:
+        processed = bool(str(row["processed_at"] or "").strip())
+        for alias in (str(row["place_id"] or "").strip(), str(row["data_id"] or "").strip()):
+            if alias in requested:
+                statuses[alias] = processed
+    return statuses
 
 
 def _review_filters(sort_by: str, status_filter: str) -> tuple[str, str, tuple]:
@@ -1434,6 +1566,10 @@ def _import_review_from_images(
         raise ValueError("Las capturas pesan demasiado en conjunto. Reduce la cantidad o el tamaño.")
 
     extracted = _extract_review_from_images(images, review_url=review_url)
+    place_id = _manual_place_id(extracted["place_name"], extracted["review_url"])
+    storage = _storage()
+    if place_id in storage.get_processed_place_ids():
+        raise ValueError("Este sitio ya está marcado como procesado y no se evaluará de nuevo.")
     submitted_by = _normalize_free_text(submitted_by)
     settings = load_settings(CONFIG_PATH)
     owner_reply = _owner_reply_storage_value(
@@ -1443,7 +1579,6 @@ def _import_review_from_images(
     humor = score_review(extracted["review_text"], owner_reply, extracted["rating"], settings.scoring)
     safety = assess_safety(extracted["review_text"], owner_reply, settings.safety)
 
-    place_id = _manual_place_id(extracted["place_name"], extracted["review_url"])
     review_id = _manual_review_id(
         extracted["place_name"],
         extracted["reviewer_name"],
@@ -1453,7 +1588,6 @@ def _import_review_from_images(
         extracted["review_url"],
     )
 
-    storage = _storage()
     storage.upsert_place(
         Place(
             place_id=place_id,
@@ -1514,11 +1648,10 @@ def _normalize_google_host(host: str) -> str:
 
 def _is_google_review_link(url: str) -> bool:
     parts = urlsplit(str(url or "").strip())
-    return _normalize_google_host(parts.netloc) in {
-        "google.com",
-        "maps.google.com",
-        "maps.app.goo.gl",
-    }
+    host = _normalize_google_host(parts.netloc)
+    if host == "goo.gl":
+        return bool(re.fullmatch(r"/maps/[^/]+/?", parts.path))
+    return host in GOOGLE_REVIEW_HOSTS
 
 
 def _normalize_review_url(url: str) -> str:
@@ -1605,7 +1738,21 @@ def _resolve_review_url(raw_url: str) -> tuple[str, str]:
         response.raise_for_status()
     except requests.RequestException:
         return normalized, ""
-    return _normalize_review_url(response.url or normalized), response.text or ""
+
+    # Google can finish at consent instead of Maps; retain the actual review URL.
+    for hop in reversed([*response.history, response]):
+        hop_url = str(hop.url or "")
+        parts = urlsplit(hop_url)
+        candidate_url = hop_url
+        if _normalize_google_host(parts.netloc) == "consent.google.com":
+            candidate_url = str((parse_qs(parts.query).get("continue") or [""])[0])
+        candidate = _normalize_review_url(candidate_url)
+        if (
+            _is_google_review_link(candidate)
+            and _normalize_google_host(urlsplit(candidate).netloc) in {"google.com", "maps.google.com"}
+        ):
+            return candidate, (hop.text or "") if candidate_url == hop_url else ""
+    raise RuntimeError("El enlace no redirige a una reseña de Google Maps válida.")
 
 
 def _extract_place_data_id_from_text(text: str, cid_hint: str = "") -> str:
@@ -1617,9 +1764,8 @@ def _extract_place_data_id_from_text(text: str, cid_hint: str = "") -> str:
     cid_hint = str(cid_hint or "").strip().lower()
     if cid_hint:
         matching = [item for item in candidates if item.lower().endswith(f":{cid_hint}")]
-        if matching:
-            matching.sort(key=lambda item: item.lower().startswith("0x0:"))
-            return matching[0]
+        matching.sort(key=lambda item: item.lower().startswith("0x0:"))
+        return matching[0] if matching else ""
     non_zero = [item for item in candidates if not item.lower().startswith("0x0:")]
     if non_zero:
         return non_zero[0]
@@ -1676,7 +1822,11 @@ def _resolve_place_data_id(review_url: str) -> tuple[str, str]:
     )
 
 
-def _build_review_from_serpapi(place_data_id: str, review_payload: dict, fallback_review_url: str) -> Review:
+def _raw_review_from_serpapi(
+    place_data_id: str,
+    review_payload: dict,
+    fallback_review_url: str,
+) -> RawReview:
     rating = int(review_payload.get("rating") or 0)
     review_text = str(
         review_payload.get("snippet")
@@ -1691,11 +1841,7 @@ def _build_review_from_serpapi(place_data_id: str, review_payload: dict, fallbac
     review_url = str(review_payload.get("link") or fallback_review_url or "").strip()
     review_id = f"{place_data_id}:{review_url or review_date}:{reviewer_name or 'anon'}"
 
-    settings = load_settings(CONFIG_PATH)
-    humor = score_review(review_text, owner_reply, rating, settings.scoring)
-    safety = assess_safety(review_text, owner_reply, settings.safety)
-
-    return Review(
+    return RawReview(
         review_id=review_id,
         place_id=place_data_id,
         rating=rating,
@@ -1703,21 +1849,44 @@ def _build_review_from_serpapi(place_data_id: str, review_payload: dict, fallbac
         reviewer_name=reviewer_name,
         reviewer_profile_url=reviewer_profile_url,
         text=review_text,
-        summary=humor.summary,
         owner_reply=owner_reply,
         review_url=review_url,
+    )
+
+
+def _score_imported_review(raw: RawReview, settings, submitted_by: str = "") -> Review:
+    humor = score_review(raw.text, raw.owner_reply, raw.rating, settings.scoring)
+    safety = assess_safety(raw.text, raw.owner_reply, settings.safety)
+    return Review(
+        review_id=raw.review_id,
+        place_id=raw.place_id,
+        rating=raw.rating,
+        date=raw.date,
+        reviewer_name=raw.reviewer_name,
+        reviewer_profile_url=raw.reviewer_profile_url,
+        text=raw.text,
+        summary=humor.summary,
+        owner_reply=raw.owner_reply,
+        review_url=raw.review_url,
         humor_score=humor.score,
         humor_notes=humor.notes,
         safety_label=safety.label,
         safety_notes=safety.notes,
         tags=",".join(humor.tags),
+        submitted_by=submitted_by,
     )
 
 
-def _upsert_place_from_reviews_payload(storage: Storage, place_data_id: str, payload: dict, review: Review) -> None:
+def _upsert_place_from_reviews_payload(
+    storage: Storage,
+    place_data_id: str,
+    payload: dict,
+    review: RawReview,
+) -> Place:
+    existing = storage.get_place_map().get(place_data_id)
     place_info = payload.get("place_info") or {}
     search_metadata = payload.get("search_metadata") or {}
-    total_reviews = place_info.get("reviews") or place_info.get("total_reviews") or 0
+    total_reviews = place_info.get("reviews") or place_info.get("total_reviews") or (existing.total_reviews if existing else 0)
     try:
         total_reviews = int(total_reviews)
     except (TypeError, ValueError):
@@ -1726,25 +1895,26 @@ def _upsert_place_from_reviews_payload(storage: Storage, place_data_id: str, pay
         average_rating = float(place_info.get("rating"))
     except (TypeError, ValueError):
         average_rating = None
-    address = str(place_info.get("address") or "").strip()
+    address = str(place_info.get("address") or (existing.address if existing else "")).strip()
     country = place_location(
         address,
         country_name(load_settings(CONFIG_PATH).discovery.country),
     )[2]
     place = Place(
-        place_id=place_data_id,
+        place_id=existing.place_id if existing else place_data_id,
         data_id=place_data_id,
-        name=str(place_info.get("title") or place_info.get("name") or "Importado manualmente").strip(),
+        name=str(place_info.get("title") or place_info.get("name") or (existing.name if existing else "Importado manualmente")).strip(),
         address=address,
-        category=str(place_info.get("type") or "manual").strip() or "manual",
+        category=str(place_info.get("type") or (existing.category if existing else "manual")).strip() or "manual",
         total_reviews=total_reviews,
         last_review_date=review.date,
         provider="serpapi",
-        place_url=str(place_info.get("link") or search_metadata.get("google_maps_url") or "").strip(),
+        place_url=str(place_info.get("link") or search_metadata.get("google_maps_url") or (existing.place_url if existing else "") or "").strip(),
         average_rating=average_rating,
         country=country,
     )
     storage.upsert_place(place)
+    return place
 
 
 def _find_review_in_serpapi(place_data_id: str, review_url: str) -> tuple[dict, dict]:
@@ -1798,7 +1968,11 @@ def _find_review_in_serpapi(place_data_id: str, review_url: str) -> tuple[dict, 
     )
 
 
-def _import_review_from_url(review_url: str) -> dict[str, Any]:
+def _import_review_from_url(
+    review_url: str,
+    submitted_by: str = "",
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     normalized_url = _normalize_review_url(review_url)
     if not normalized_url:
         raise ValueError("Pega un enlace de reseña antes de importar.")
@@ -1810,29 +1984,172 @@ def _import_review_from_url(review_url: str) -> dict[str, Any]:
             f"Falta la variable de entorno {settings.providers.serpapi_api_key_env}."
         )
 
+    if on_progress:
+        on_progress({"message": "Identificando el sitio de la reseña…"})
     resolved_url, place_data_id = _resolve_place_data_id(normalized_url)
-    payload, raw_review = _find_review_in_serpapi(place_data_id, resolved_url)
-    review = _build_review_from_serpapi(place_data_id, raw_review, resolved_url)
-    if not review.text:
-        raise RuntimeError("La reseña existe, pero no tiene texto para puntuar.")
-
     storage = _storage()
-    already_exists = storage.review_exists(review.review_id)
-    _upsert_place_from_reviews_payload(storage, place_data_id, payload, review)
-    storage.upsert_review(review)
-    if review.humor_score < settings.app.humor_threshold:
-        storage.update_status(review.review_id, "rejected")
+    if place_data_id in storage.get_processed_place_ids():
+        raise ValueError("Este sitio ya está marcado como procesado y no se evaluará de nuevo.")
+    if on_progress:
+        on_progress({"message": "Localizando la reseña del enlace…"})
+    payload, raw_payload = _find_review_in_serpapi(place_data_id, resolved_url)
+    raw_review = _raw_review_from_serpapi(place_data_id, raw_payload, resolved_url)
+    if not raw_review.text:
+        raise RuntimeError("La reseña existe, pero no tiene texto para puntuar.")
+    if place_data_id in storage.get_processed_place_ids():
+        raise ValueError("Este sitio ya está marcado como procesado y no se evaluará de nuevo.")
 
-    return {
+    place = _upsert_place_from_reviews_payload(storage, place_data_id, payload, raw_review)
+    with sqlite3.connect(storage.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        existing_rows = conn.execute(
+            "SELECT review_id, review_url, humor_score FROM reviews WHERE place_id IN (?, ?)",
+            (place.place_id, place.data_id),
+        ).fetchall()
+    existing_by_id = {str(row["review_id"]): dict(row) for row in existing_rows}
+    existing_by_url = {
+        _review_url_key(str(row["review_url"])): dict(row)
+        for row in existing_rows
+        if _extract_review_id_from_url(str(row["review_url"] or ""))
+    }
+    target_key = _review_url_key(raw_review.review_url)
+    existing = existing_by_id.get(raw_review.review_id) or existing_by_url.get(target_key)
+    already_exists = existing is not None
+    submitted_by = _normalize_free_text(submitted_by)
+    if existing:
+        review_id = str(existing["review_id"])
+        humor_score = int(existing["humor_score"] or 0)
+        if submitted_by:
+            with sqlite3.connect(storage.db_path) as conn:
+                conn.execute(
+                    "UPDATE reviews SET submitted_by=? WHERE review_id=?",
+                    (submitted_by, review_id),
+                )
+    else:
+        review = _score_imported_review(raw_review, settings, submitted_by)
+        storage.upsert_review(review)
+        if review.humor_score < settings.app.humor_threshold:
+            storage.update_status(review.review_id, "rejected")
+        review_id = review.review_id
+        humor_score = review.humor_score
+
+    result = {
         "ok": True,
         "already_exists": already_exists,
-        "review_id": review.review_id,
-        "place_name": (payload.get("place_info") or {}).get("title") or "",
-        "reviewer_name": review.reviewer_name,
-        "rating": review.rating,
-        "humor_score": review.humor_score,
-        "detail_url": f"/review?id={quote(review.review_id, safe='')}",
+        "review_id": review_id,
+        "place_id": place.place_id,
+        "place_name": place.name,
+        "reviewer_name": raw_review.reviewer_name,
+        "submitted_by": submitted_by,
+        "rating": raw_review.rating,
+        "humor_score": humor_score,
+        "detail_url": f"/place?id={quote(place.place_id, safe='')}",
+        "review_count": len(existing_by_id) + (0 if already_exists else 1),
+        "new_reviews": 0 if already_exists else 1,
+        "additional_reviews": 0,
+        "inspected_reviews": 0,
+        "max_reviews": max(1, settings.app.max_reviews_per_place),
+        "warning": "",
     }
+    known_ids = set(existing_by_id) | {raw_review.review_id, review_id}
+    known_urls = set(existing_by_url) | {target_key}
+
+    def report() -> None:
+        if on_progress:
+            on_progress({
+                **result,
+                "message": (
+                    f"{place.name}: {result['additional_reviews']} reseñas adicionales analizadas · "
+                    f"{result['inspected_reviews']}/{result['max_reviews']} revisadas."
+                ),
+            })
+
+    report()
+    try:
+        for raw in collect_reviews(
+            [place_data_id],
+            settings.providers,
+            result["max_reviews"],
+            settings.app.data_dir / "api_cache",
+            raise_on_error=True,
+        ):
+            if place_data_id in storage.get_processed_place_ids():
+                result["warning"] = "El sitio se ha marcado como procesado. Se ha detenido el análisis adicional."
+                break
+            result["inspected_reviews"] += 1
+            url_key = _review_url_key(raw.review_url)
+            has_review_url = bool(_extract_review_id_from_url(raw.review_url))
+            if (
+                not (raw.text or "").strip()
+                or raw.rating > 2
+                or raw.review_id in known_ids
+                or (has_review_url and url_key in known_urls)
+                or storage.review_exists(raw.review_id)
+            ):
+                report()
+                continue
+            review = _score_imported_review(raw, settings)
+            storage.upsert_review(review)
+            if review.humor_score < settings.app.humor_threshold:
+                storage.update_status(review.review_id, "rejected")
+            known_ids.add(raw.review_id)
+            if has_review_url:
+                known_urls.add(url_key)
+            result["additional_reviews"] += 1
+            result["new_reviews"] += 1
+            result["review_count"] += 1
+            report()
+    except Exception as exc:
+        result["warning"] = f"El análisis adicional se interrumpió: {exc}. Las reseñas guardadas están disponibles en el sitio."
+    return result
+
+
+def _review_import_status() -> dict[str, Any]:
+    with _review_import_lock:
+        return dict(_review_import_job)
+
+
+def _run_review_import(job_id: str, review_url: str, submitted_by: str) -> None:
+    def update(fields: dict[str, Any]) -> None:
+        with _review_import_lock:
+            if _review_import_job.get("id") == job_id:
+                _review_import_job.update(fields)
+
+    try:
+        result = _import_review_from_url(review_url, submitted_by, on_progress=update)
+        update({
+            **result,
+            "status": "completed",
+            "message": (
+                f"{result['place_name']}: {result['new_reviews']} reseñas nuevas analizadas · "
+                f"{result['review_count']} reseñas disponibles en el sitio."
+            ),
+        })
+    except Exception as exc:
+        update({"ok": False, "status": "failed", "message": str(exc)})
+
+
+def _start_review_import(review_url: str, submitted_by: str) -> dict[str, Any] | None:
+    normalized_url = _normalize_review_url(review_url)
+    if not normalized_url or not _is_google_review_link(normalized_url):
+        raise ValueError("Pega un enlace de una reseña de Google Maps válido.")
+    with _review_import_lock:
+        if _review_import_job.get("status") == "running":
+            return None
+        job = {
+            "id": uuid4().hex,
+            "ok": True,
+            "status": "running",
+            "message": "Identificando el sitio de la reseña…",
+        }
+        _review_import_job.clear()
+        _review_import_job.update(job)
+    threading.Thread(
+        target=_run_review_import,
+        args=(job["id"], normalized_url, submitted_by),
+        daemon=True,
+    ).start()
+    return job
 
 
 def _parse_reviewer_payload(raw: str) -> tuple[str, str] | None:
@@ -2058,7 +2375,11 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     offset = 0
             if not log_path.exists():
-                payload = {"lines": [], "next_offset": 0}
+                payload = {
+                    "lines": [],
+                    "next_offset": 0,
+                    "run": _active_run_status(),
+                }
                 self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
                 return
             data = log_path.read_bytes()
@@ -2067,7 +2388,11 @@ class Handler(BaseHTTPRequestHandler):
             chunk = data[offset:]
             text = chunk.decode("utf-8", errors="ignore")
             lines = [line for line in text.splitlines() if line.strip()]
-            payload = {"lines": lines, "next_offset": len(data)}
+            payload = {
+                "lines": lines,
+                "next_offset": len(data),
+                "run": _active_run_status(),
+            }
             self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
             return
         if self.path.startswith("/api/db-data"):
@@ -2106,10 +2431,51 @@ class Handler(BaseHTTPRequestHandler):
             payload = {"statuses": _fetch_review_statuses(review_ids)}
             self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
             return
+        if self.path.startswith("/api/import-review-status"):
+            parsed = parse_qs(urlsplit(self.path).query)
+            job_id = (parsed.get("id") or [""])[0]
+            payload = _review_import_status()
+            if job_id and payload.get("id") != job_id:
+                self._send(
+                    404,
+                    json.dumps({"ok": False, "message": "El análisis ya no está disponible. Abre el sitio desde la base de datos."}).encode("utf-8"),
+                    "application/json",
+                )
+                return
+            self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
+            return
+        if self.path.startswith("/api/place-statuses"):
+            parsed = parse_qs(urlsplit(self.path).query)
+            raw_ids = parsed.get("ids") or []
+            place_ids: List[str] = []
+            for batch in raw_ids:
+                place_ids.extend(part.strip() for part in str(batch).split(","))
+            payload = {"statuses": _fetch_place_statuses(place_ids)}
+            self._send(200, json.dumps(payload).encode("utf-8"), "application/json")
+            return
         self._send(404, b"Not found", "text/plain")
 
     def do_POST(self) -> None:
         if not self._require_auth():
+            return
+        if self.path == "/api/stop-run":
+            stopped = _stop_active_run(_progress_log_path())
+            self._send(
+                202 if stopped else 200,
+                json.dumps(
+                    {
+                        "ok": True,
+                        "stopped": stopped,
+                        "message": (
+                            "Deteniendo la búsqueda activa."
+                            if stopped
+                            else "No hay ninguna búsqueda activa."
+                        ),
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8"),
+                "application/json",
+            )
             return
         if self.path == "/api/config":
             length = int(self.headers.get("Content-Length", "0"))
@@ -2118,37 +2484,29 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, b"ok", "text/plain")
             return
         if self.path == "/api/run-weekly":
-            import subprocess
-
             log_path = _progress_log_path()
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text("", encoding="utf-8")
-
-            def _runner() -> None:
-                env = os.environ.copy()
-                env["PROGRESS_LOG"] = str(log_path)
-                result = subprocess.run(
-                    ["python3", "-m", "humor_reviews.run", "weekly"],
-                    cwd=str(ROOT),
-                    capture_output=True,
-                    text=True,
-                    env=env,
+            try:
+                started = _start_run_process(
+                    [sys.executable, "-m", "humor_reviews.run", "weekly"],
+                    "weekly",
+                    log_path,
                 )
-                if result.stdout:
-                    _append_progress_log(log_path, "process_output", {"stream": "stdout", "text": result.stdout})
-                if result.stderr:
-                    _append_progress_log(log_path, "process_output", {"stream": "stderr", "text": result.stderr})
-                if result.returncode != 0:
-                    _append_progress_log(
-                        log_path,
-                        "run_failed",
-                        {
-                            "returncode": result.returncode,
-                            "message": _friendly_process_failure(result.stderr),
-                        },
-                    )
-
-            threading.Thread(target=_runner, daemon=True).start()
+            except OSError as exc:
+                self._send(
+                    500,
+                    json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"),
+                    "application/json",
+                )
+                return
+            if not started:
+                self._send(
+                    409,
+                    json.dumps(
+                        {"ok": False, "message": "Ya hay una búsqueda en curso."}
+                    ).encode("utf-8"),
+                    "application/json",
+                )
+                return
             self._send(202, b"started", "text/plain; charset=utf-8")
             return
         if self.path == "/api/episode-observances":
@@ -2204,8 +2562,6 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if self.path == "/api/run-episode":
-            import subprocess
-
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             episode_date = str(payload.get("date") or "").strip()
@@ -2246,54 +2602,40 @@ class Handler(BaseHTTPRequestHandler):
             selected_observances = selected_observances[:50]
 
             log_path = _progress_log_path()
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text("", encoding="utf-8")
-
-            def _episode_runner() -> None:
-                env = os.environ.copy()
-                env["PROGRESS_LOG"] = str(log_path)
-                command = [
-                    sys.executable,
-                    "-m",
-                    "humor_reviews.run",
-                    "episode-search",
-                    "--date",
-                    episode_date,
-                    "--target",
-                    str(target),
-                    "--humor-threshold",
-                    str(humor_threshold),
-                    "--relevance-threshold",
-                    str(relevance_threshold),
-                ]
-                for observance in selected_observances:
-                    command.extend(["--observance", observance])
-                result = subprocess.run(
-                    command,
-                    cwd=str(ROOT),
-                    capture_output=True,
-                    text=True,
-                    env=env,
+            command = [
+                sys.executable,
+                "-m",
+                "humor_reviews.run",
+                "episode-search",
+                "--date",
+                episode_date,
+                "--target",
+                str(target),
+                "--humor-threshold",
+                str(humor_threshold),
+                "--relevance-threshold",
+                str(relevance_threshold),
+            ]
+            for observance in selected_observances:
+                command.extend(["--observance", observance])
+            try:
+                started = _start_run_process(command, "episode", log_path)
+            except OSError as exc:
+                self._send(
+                    500,
+                    json.dumps({"ok": False, "message": str(exc)}).encode("utf-8"),
+                    "application/json",
                 )
-                if result.stdout:
-                    _append_progress_log(
-                        log_path, "process_output", {"stream": "stdout", "text": result.stdout}
-                    )
-                if result.stderr:
-                    _append_progress_log(
-                        log_path, "process_output", {"stream": "stderr", "text": result.stderr}
-                    )
-                if result.returncode != 0:
-                    _append_progress_log(
-                        log_path,
-                        "run_failed",
-                        {
-                            "returncode": result.returncode,
-                            "message": _friendly_process_failure(result.stderr),
-                        },
-                    )
-
-            threading.Thread(target=_episode_runner, daemon=True).start()
+                return
+            if not started:
+                self._send(
+                    409,
+                    json.dumps(
+                        {"ok": False, "message": "Ya hay una búsqueda en curso."}
+                    ).encode("utf-8"),
+                    "application/json",
+                )
+                return
             self._send(
                 202,
                 json.dumps(
@@ -2309,8 +2651,6 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if self.path == "/api/run-dry-run":
-            import subprocess
-
             result = subprocess.run(
                 ["python3", "-m", "humor_reviews.run", "shortlist", "--dry-run"],
                 cwd=str(ROOT),
@@ -2325,8 +2665,9 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             review_url = str(payload.get("review_url") or "").strip()
+            submitted_by = str(payload.get("submitted_by") or "").strip()
             try:
-                result = _import_review_from_url(review_url)
+                result = _start_review_import(review_url, submitted_by)
             except ValueError as exc:
                 self._send(
                     400,
@@ -2341,7 +2682,14 @@ class Handler(BaseHTTPRequestHandler):
                     "application/json",
                 )
                 return
-            self._send(200, json.dumps(result).encode("utf-8"), "application/json")
+            if result is None:
+                self._send(
+                    409,
+                    json.dumps({"ok": False, "message": "Ya hay un análisis de sitio en curso."}).encode("utf-8"),
+                    "application/json",
+                )
+                return
+            self._send(202, json.dumps(result).encode("utf-8"), "application/json")
             return
         if self.path == "/api/import-review-image":
             length = int(self.headers.get("Content-Length", "0"))

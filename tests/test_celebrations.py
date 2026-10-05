@@ -25,7 +25,11 @@ from humor_reviews.celebration_strategy import (
 from humor_reviews.collect import RawReview
 from humor_reviews.discover import DiscoveredPlace
 from humor_reviews.humor import HumorResult
-from humor_reviews.run import _episode_new_target_met, run_episode_search
+from humor_reviews.run import (
+    _episode_new_target_met,
+    _scope_episode_searches,
+    run_episode_search,
+)
 from humor_reviews.safety import SafetyResult
 from humor_reviews.settings import ScoringSettings, load_settings
 from humor_reviews.storage import Place, Review, Storage
@@ -252,6 +256,63 @@ class CelebrationStrategyTests(unittest.TestCase):
         self.assertEqual(len(strategy.selected_observances), 3)
         self.assertIn("restaurante de pulpo", [item.query for item in strategy.searches])
         self.assertIn("planetario", [item.query for item in strategy.searches])
+        self.assertEqual(len(strategy.searches), 12)
+
+    @patch("humor_reviews.celebration_strategy.OpenAI")
+    def test_local_strategy_expands_conflict_searches_to_full_budget(self, openai: Mock) -> None:
+        strategy = build_celebration_strategy_from_text(
+            "Día de la Resolución de Conflictos",
+            _settings("typesafe"),
+        )
+
+        openai.assert_not_called()
+        queries = [item.query for item in strategy.searches]
+        self.assertEqual(len(queries), 12)
+        self.assertIn("centro de mediación", queries)
+        self.assertIn("terapia de pareja", queries)
+        self.assertNotIn("la Resolución de Conflictos", queries)
+
+    @patch("humor_reviews.celebration_strategy.OpenAI")
+    def test_openai_strategy_rejects_loose_museum_association(self, openai: Mock) -> None:
+        openai.return_value.chat.completions.create.return_value = Mock(
+            choices=[
+                Mock(
+                    finish_reason="stop",
+                    message=Mock(
+                        content=json.dumps(
+                            {
+                                "selected_observances": ["Día Internacional del Pulpo"],
+                                "discarded_observances": [],
+                                "notes": "Búsquedas del pulpo",
+                                "searches": [
+                                    {
+                                        "query": "restaurantes de pulpo",
+                                        "region": "España",
+                                        "rationale": "Relación directa",
+                                    },
+                                    {
+                                        "query": "museos del mar",
+                                        "region": "España",
+                                        "rationale": "Asociación lateral",
+                                    },
+                                ],
+                            }
+                        ),
+                    ),
+                )
+            ]
+        )
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            strategy = build_celebration_strategy_from_text(
+                "Día Internacional del Pulpo",
+                _settings("openai"),
+            )
+
+        queries = [item.query for item in strategy.searches]
+        self.assertEqual(len(queries), 12)
+        self.assertIn("restaurantes de pulpo", queries)
+        self.assertNotIn("museos del mar", queries)
 
     @patch("humor_reviews.celebration_strategy.OpenAI")
     def test_local_strategy_discards_unsuitable_medical_observances(self, openai: Mock) -> None:
@@ -352,17 +413,36 @@ class EpisodeSearchTests(unittest.TestCase):
                 max_searches=5,
                 max_places=10,
                 max_reviews_per_place=10,
-                max_archived_candidates=0,
                 selected_observance_names=[vision],
             )
 
-        build_strategy.assert_called_once_with(vision, settings.scoring)
+        build_strategy.assert_called_once_with(
+            vision,
+            settings.scoring,
+            search_limit=5,
+        )
+        started_event = next(
+            call.args[1]
+            for call in emit.call_args_list
+            if call.args[0] == "run_started"
+        )
+        self.assertEqual(started_event["mode"], "episode")
+        self.assertEqual(started_event["humor_threshold"], 60)
+        self.assertEqual(started_event["relevance_threshold"], 60)
         found_event = next(
             call.args[1]
             for call in emit.call_args_list
             if call.args[0] == "observances_found"
         )
         self.assertEqual(found_event["observances"], [vision])
+        complete_event = next(
+            call.args[1]
+            for call in emit.call_args_list
+            if call.args[0] == "run_complete"
+        )
+        self.assertFalse(complete_event["target_met"])
+        self.assertEqual(complete_event["completion_reason"], "searches_exhausted")
+        self.assertEqual(complete_event["searches_attempted"], 0)
 
     def test_multiple_observances_require_three_new_reviews_each(self) -> None:
         observances = ["Día del Pulpo", "Día de la Visión"]
@@ -393,6 +473,96 @@ class EpisodeSearchTests(unittest.TestCase):
                 10,
             )
         )
+
+    def test_episode_search_scope_uses_config_instead_of_planner_region(self) -> None:
+        searches = [SearchPlan("pulpería", "Madrid", "Pulpo")]
+
+        configured = _scope_episode_searches(searches, ["Barcelona"], "", 5)
+        country_wide = _scope_episode_searches(searches, [], "ES", 5)
+        unrestricted = _scope_episode_searches(searches, [], "", 5)
+
+        self.assertEqual([item.region for item in configured], ["Barcelona"])
+        self.assertEqual([item.region for item in country_wide], ["Spain"])
+        self.assertEqual([item.region for item in unrestricted], [""])
+
+    @patch("humor_reviews.run._emit_progress")
+    @patch("humor_reviews.run.assess_safety")
+    @patch("humor_reviews.run.score_review")
+    @patch("humor_reviews.run.score_celebration_relevance")
+    @patch("humor_reviews.run.collect_reviews")
+    @patch("humor_reviews.run.discover_places_for_queries")
+    @patch("humor_reviews.run.build_celebration_strategy_from_text")
+    @patch("humor_reviews.run.fetch_observances")
+    def test_episode_search_continues_past_place_limit_until_target(
+        self,
+        fetch_calendar: Mock,
+        build_strategy: Mock,
+        discover: Mock,
+        collect: Mock,
+        relevance: Mock,
+        humor: Mock,
+        safety: Mock,
+        emit: Mock,
+    ) -> None:
+        observance = "Día del Chocolate"
+        fetch_calendar.return_value = [
+            Observance(observance, "2026-09-13", "https://example.com/chocolate")
+        ]
+        build_strategy.return_value = CelebrationStrategy(
+            [observance],
+            [],
+            "",
+            [
+                SearchPlan("chocolatería", "Madrid", "Primera"),
+                SearchPlan("tienda de chocolate", "Madrid", "Segunda"),
+            ],
+        )
+        places = [
+            Place("place-1", "data-1", "Primera", "Madrid", "shop", 10, None, "test"),
+            Place("place-2", "data-2", "Segunda", "Madrid", "shop", 10, None, "test"),
+        ]
+        discover.side_effect = [[DiscoveredPlace(place)] for place in places]
+        collect.side_effect = [
+            [RawReview("review-1", "data-1", 1, "hoy", "A", "", "Normal", "", "u1")],
+            [RawReview("review-2", "data-2", 1, "hoy", "B", "", "Graciosa", "", "u2")],
+        ]
+        humor.side_effect = [
+            HumorResult(10, "floja", ["poco_gracioso"], ""),
+            HumorResult(90, "buena", ["absurdo"], ""),
+        ]
+        relevance.return_value = RelevanceResult(90, observance, "Encaja")
+        safety.return_value = SafetyResult("safe", "")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "config.yaml"
+            config_path.write_text(
+                f"app:\n  data_dir: {root / 'data'}\ndiscovery:\n  country: ES\nscoring: {{}}\nsafety: {{}}\n",
+                encoding="utf-8",
+            )
+            settings = load_settings(config_path)
+            storage = Storage(settings.app.data_dir / "humor_reviews.db")
+            run_episode_search(
+                storage,
+                settings,
+                episode_date=date(2026, 9, 13),
+                target_reviews=1,
+                humor_threshold=60,
+                relevance_threshold=60,
+                max_searches=2,
+                max_places=1,
+                max_reviews_per_place=10,
+            )
+
+        self.assertEqual(discover.call_count, 2)
+        complete_event = next(
+            call.args[1]
+            for call in emit.call_args_list
+            if call.args[0] == "run_complete"
+        )
+        self.assertTrue(complete_event["target_met"])
+        self.assertEqual(complete_event["discovered"], 2)
+        self.assertEqual(complete_event["completion_reason"], "target_met")
 
     @patch("humor_reviews.run._emit_progress")
     @patch("humor_reviews.run.assess_safety")
@@ -507,7 +677,6 @@ class EpisodeSearchTests(unittest.TestCase):
                 max_searches=2,
                 max_places=10,
                 max_reviews_per_place=10,
-                max_archived_candidates=0,
             )
 
         self.assertEqual(discover.call_count, 2)
@@ -522,6 +691,10 @@ class EpisodeSearchTests(unittest.TestCase):
             {pulpo: 5, vision: 3},
         )
         self.assertEqual(complete_event["per_observance_target"], 3)
+        self.assertTrue(complete_event["target_met"])
+        self.assertEqual(complete_event["completion_reason"], "target_met")
+        self.assertEqual(complete_event["searches_attempted"], 2)
+        self.assertEqual(discover.call_args_list[0].args[1].min_total_reviews, 1)
 
     @patch("humor_reviews.run._emit_progress")
     @patch("humor_reviews.run.assess_safety")
@@ -531,7 +704,7 @@ class EpisodeSearchTests(unittest.TestCase):
     @patch("humor_reviews.run.discover_places_for_queries")
     @patch("humor_reviews.run.build_celebration_strategy_from_text")
     @patch("humor_reviews.run.fetch_observances")
-    def test_archive_candidates_do_not_replace_new_review_target(
+    def test_existing_reviews_are_not_scanned_for_episode_search(
         self,
         fetch_calendar: Mock,
         build_strategy: Mock,
@@ -632,7 +805,6 @@ class EpisodeSearchTests(unittest.TestCase):
                 5,
                 10,
                 10,
-                40,
             )
             with sqlite3.connect(storage.db_path) as conn:
                 matches = conn.execute(
@@ -648,16 +820,31 @@ class EpisodeSearchTests(unittest.TestCase):
         discover.assert_called_once()
         self.assertEqual(
             matches,
-            [("archived", 1, "archive"), ("new-review", 1, "search")],
+            [("new-review", 1, "search")],
         )
-        self.assertEqual(relevant_count, 2)
+        self.assertEqual(relevant_count, 1)
+        self.assertEqual(relevance.call_count, 1)
+        theme_event = next(
+            call.args[1]
+            for call in _emit.call_args_list
+            if call.args[0] == "theme_review_scored"
+        )
+        self.assertEqual(theme_event["place_id"], "data-new")
+        self.assertEqual(theme_event["place_data_id"], "data-new")
+        self.assertEqual(theme_event["google_place_id"], "place-new")
+        archive_events = [
+            call.args[0]
+            for call in _emit.call_args_list
+            if call.args[0].startswith("archive_scan")
+        ]
+        self.assertEqual(archive_events, [])
         complete_event = next(
             call.args[1]
             for call in _emit.call_args_list
             if call.args[0] == "run_complete"
         )
         self.assertEqual(complete_event["new_relevant"], 1)
-        self.assertEqual(complete_event["archived_relevant"], 1)
+        self.assertNotIn("archived_relevant", complete_event)
 
     @patch("humor_reviews.run._emit_progress")
     @patch("humor_reviews.run.assess_safety")
@@ -735,7 +922,6 @@ class EpisodeSearchTests(unittest.TestCase):
                 max_searches=5,
                 max_places=10,
                 max_reviews_per_place=10,
-                max_archived_candidates=0,
             )
             with sqlite3.connect(storage.db_path) as conn:
                 reviews = conn.execute(
@@ -754,6 +940,103 @@ class EpisodeSearchTests(unittest.TestCase):
         self.assertEqual(reviews, [("episode", "new"), ("funny-later", "new")])
         self.assertEqual(run, (1, 1))
         self.assertEqual(matches, [("episode", 1), ("funny-later", 0)])
+
+    @patch("humor_reviews.run._emit_progress")
+    @patch("humor_reviews.run.assess_safety")
+    @patch("humor_reviews.run.score_review")
+    @patch("humor_reviews.run.score_celebration_relevance")
+    @patch("humor_reviews.run.collect_reviews")
+    @patch("humor_reviews.run.discover_places_for_queries")
+    @patch("humor_reviews.run.build_celebration_strategy_from_text")
+    @patch("humor_reviews.run.fetch_observances")
+    def test_episode_search_skips_processed_places_before_collecting_reviews(
+        self,
+        fetch_calendar: Mock,
+        build_strategy: Mock,
+        discover: Mock,
+        collect: Mock,
+        relevance: Mock,
+        humor: Mock,
+        safety: Mock,
+        emit: Mock,
+    ) -> None:
+        observance = "Día del Chocolate"
+        fetch_calendar.return_value = [
+            Observance(observance, "2026-09-13", "https://example.com/chocolate")
+        ]
+        build_strategy.return_value = CelebrationStrategy(
+            [observance],
+            [],
+            "",
+            [SearchPlan("chocolatería", "Madrid", "Relacionado")],
+        )
+        processed_place = Place(
+            "processed-place", "processed-data", "Antigua", "Madrid", "shop", 10, None, "test"
+        )
+        fresh_place = Place(
+            "fresh-place", "fresh-data", "Nueva", "Madrid", "shop", 10, None, "test"
+        )
+        discover.return_value = [
+            DiscoveredPlace(processed_place),
+            DiscoveredPlace(fresh_place),
+        ]
+        collect.return_value = [
+            RawReview(
+                "fresh-review",
+                "fresh-data",
+                1,
+                "hoy",
+                "Autor",
+                "",
+                "Chocolate muy gracioso",
+                "",
+                "https://example.com/review",
+            )
+        ]
+        humor.return_value = HumorResult(90, "buena", ["absurdo"], "")
+        relevance.return_value = RelevanceResult(90, observance, "Encaja")
+        safety.return_value = SafetyResult("safe", "")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "config.yaml"
+            config_path.write_text(
+                f"app:\n  data_dir: {root / 'data'}\ndiscovery:\n  country: ES\nscoring: {{}}\nsafety: {{}}\n",
+                encoding="utf-8",
+            )
+            settings = load_settings(config_path)
+            storage = Storage(settings.app.data_dir / "humor_reviews.db")
+            storage.upsert_place(processed_place)
+            with sqlite3.connect(storage.db_path) as conn:
+                conn.execute(
+                    "UPDATE places SET processed_at='2026-09-30T12:00:00' WHERE place_id=?",
+                    (processed_place.place_id,),
+                )
+
+            run_episode_search(
+                storage,
+                settings,
+                episode_date=date(2026, 9, 13),
+                target_reviews=1,
+                humor_threshold=60,
+                relevance_threshold=60,
+                max_searches=1,
+                max_places=10,
+                max_reviews_per_place=10,
+            )
+
+        collect.assert_called_once()
+        self.assertEqual(collect.call_args.args[0], ["fresh-data"])
+        humor.assert_called_once()
+        skipped = [
+            call.args[1]
+            for call in emit.call_args_list
+            if call.args[0] == "processed_place_skipped"
+        ]
+        self.assertEqual(
+            skipped,
+            [{"place_id": "processed-place", "place_name": "Antigua"}],
+        )
 
 
 if __name__ == "__main__":
