@@ -50,6 +50,7 @@ def _serpapi_maps_search(
     no_cache: bool = False,
     location: str | None = None,
     _retry_without_location: bool = True,
+    include_place_result: bool = False,
 ) -> tuple[list[dict], bool]:
     cache_payload = {
         "query": query,
@@ -57,6 +58,8 @@ def _serpapi_maps_search(
         "gl": gl,
         "location": location or "",
     }
+    if include_place_result:
+        cache_payload["include_place_result"] = True
     cached = load_cached_json(cache_dir, "discover", cache_payload)
     if isinstance(cached, list):
         emit_api_log(
@@ -120,6 +123,7 @@ def _serpapi_maps_search(
                 no_cache=no_cache,
                 location=None,
                 _retry_without_location=False,
+                include_place_result=include_place_result,
             )
         redacted = _redact_request_url(getattr(exc, "request", None))
         body = _response_excerpt(getattr(exc, "response", None))
@@ -134,6 +138,8 @@ def _serpapi_maps_search(
         ) from exc
     data = resp.json()
     results = data.get("local_results", []) or []
+    if include_place_result and not results and isinstance(data.get("place_results"), dict):
+        results = [data["place_results"]]
     emit_api_log(
         "api_response",
         {

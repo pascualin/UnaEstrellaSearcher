@@ -133,6 +133,19 @@ safety: {}
 
 class OpenAIScoringTests(unittest.TestCase):
     @patch("humor_reviews.humor.OpenAI")
+    def test_unknown_stars_are_sent_as_no_rating_not_zero_stars(self, openai: Mock) -> None:
+        settings = _settings("openai")
+        openai.return_value.responses.create.return_value = Mock(
+            status="completed", output_text='{"score": 82, "notes": "Ok", "tags": []}',
+        )
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-secret"}):
+            result = score_review("Texto", "", 0, settings)
+        request = openai.return_value.responses.create.call_args.kwargs
+        self.assertIn("ESTRELLAS: no rating", request["input"])
+        self.assertNotIn("ESTRELLAS: 0", request["input"])
+        self.assertEqual(result.score, 82)
+
+    @patch("humor_reviews.humor.OpenAI")
     def test_reasoning_request_uses_responses_api_without_temperature(self, openai: Mock) -> None:
         settings = _settings("openai")
         settings.model = "gpt-6-astra"

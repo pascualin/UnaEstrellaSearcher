@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from datetime import date, datetime
 from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -24,12 +25,15 @@ from openai import OpenAI
 import requests
 import yaml
 
+from humor_reviews.api_cache import load_cached_json, save_cached_json
+from humor_reviews.api_logging import emit_api_log
 from humor_reviews.celebration_calendar import fetch_observances
 from humor_reviews.celebration_strategy import observance_exclusion_reason
 from humor_reviews.collect import RawReview, _serpapi_reviews, collect_reviews
+from humor_reviews.discover import _normalize_match_text, _serpapi_maps_search
 from humor_reviews.humor import score_review
 from humor_reviews.notion_sync import NotionSyncError, append_review_image, sync_place_reviews_page
-from humor_reviews.openai_models import openai_model_catalog
+from humor_reviews.openai_models import openai_model_catalog, openai_model_profile
 from humor_reviews.place_metadata import country_name, place_location
 from humor_reviews.safety import assess_safety
 from humor_reviews.settings import load_settings
@@ -351,6 +355,18 @@ def _ensure_place_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE places ADD COLUMN processed_at TEXT")
 
 
+def _place_cid(identifier: str) -> str:
+    match = re.fullmatch(r"0x[0-9a-f]+:(0x[0-9a-f]+)", str(identifier or "").strip().lower())
+    return match.group(1) if match else ""
+
+
+def _same_place_identifier(left: str, right: str) -> bool:
+    if left and left == right:
+        return True
+    cid = _place_cid(left)
+    return bool(cid and cid == _place_cid(right))
+
+
 def _cached_place_metadata(place_ids: list[str]) -> dict[str, Any]:
     settings = load_settings(CONFIG_PATH)
     cache_dir = settings.app.data_dir / "api_cache"
@@ -360,7 +376,15 @@ def _cached_place_metadata(place_ids: list[str]) -> dict[str, Any]:
     if lookup_key in _place_metadata_lookups:
         return _place_metadata_lookups[lookup_key]
 
-    identifier_set = set(identifiers)
+    for identifier in identifiers:
+        cid = _place_cid(identifier)
+        if cid:
+            cached = load_cached_json(
+                cache_dir, "place", {"cid": str(int(cid, 16)), "hl": settings.providers.serpapi_hl}
+            )
+            if isinstance(cached, dict) and cached:
+                _place_metadata_lookups[lookup_key] = cached
+                return cached
     for path in (cache_dir / "discover").glob("*.json"):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -372,7 +396,7 @@ def _cached_place_metadata(place_ids: list[str]) -> dict[str, Any]:
             if not isinstance(item, dict):
                 continue
             item_ids = {str(item.get("place_id") or ""), str(item.get("data_id") or "")}
-            if identifier_set.intersection(item_ids):
+            if any(_same_place_identifier(left, right) for left in identifiers for right in item_ids):
                 _place_metadata_lookups[lookup_key] = item
                 return item
 
@@ -386,12 +410,62 @@ def _cached_place_metadata(place_ids: list[str]) -> dict[str, Any]:
                 continue
             data_id = str((payload.get("search_parameters") or {}).get("data_id") or "")
             place_info = payload.get("place_info") or {}
-            if data_id in identifier_set and isinstance(place_info, dict):
+            if (
+                any(_same_place_identifier(identifier, data_id) for identifier in identifiers)
+                and isinstance(place_info, dict)
+                and place_info
+            ):
                 _place_metadata_lookups[lookup_key] = place_info
                 return place_info
 
     _place_metadata_lookups[lookup_key] = {}
     return {}
+
+
+def _fetch_import_place_metadata(place_data_id: str) -> dict[str, Any]:
+    cid = _place_cid(place_data_id)
+    if not cid:
+        return {}
+    settings = load_settings(CONFIG_PATH)
+    cache_dir = settings.app.data_dir / "api_cache"
+    cache_payload = {"cid": str(int(cid, 16)), "hl": settings.providers.serpapi_hl}
+    cached = load_cached_json(cache_dir, "place", cache_payload)
+    if isinstance(cached, dict) and cached:
+        return cached
+    api_key = os.getenv(settings.providers.serpapi_api_key_env, "").strip()
+    if not api_key:
+        return {}
+    params = {
+        "engine": "google_maps",
+        "data_cid": cache_payload["cid"],
+        "hl": settings.providers.serpapi_hl,
+        "api_key": api_key,
+    }
+    emit_api_log("api_request", {"provider": "serpapi", "api": "google_maps_place", "params": params})
+    try:
+        response = requests.get("https://serpapi.com/search.json", params=params, timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise RuntimeError(f"No se pudo obtener la ficha del sitio ({exc.__class__.__name__}).") from exc
+    if not isinstance(payload, dict):
+        return {}
+    if payload.get("error"):
+        raise RuntimeError(str(payload["error"]).replace(api_key, "REDACTED"))
+    metadata = payload.get("place_results") or {}
+    if not isinstance(metadata, dict) or not metadata:
+        return {}
+    returned_cid = _place_cid(str(metadata.get("data_id") or ""))
+    if not returned_cid and metadata.get("data_cid") is None:
+        return {}
+    if (returned_cid and returned_cid != cid) or (
+        metadata.get("data_cid") is not None and str(metadata["data_cid"]) != cache_payload["cid"]
+    ):
+        return {}
+    save_cached_json(cache_dir, "place", cache_payload, metadata)
+    _place_metadata_lookups.clear()
+    emit_api_log("api_response", {"provider": "serpapi", "api": "google_maps_place", "title": metadata.get("title")})
+    return metadata
 
 
 def _hydrate_place_metadata(conn: sqlite3.Connection, place_row: sqlite3.Row) -> sqlite3.Row:
@@ -1343,6 +1417,38 @@ def _normalize_free_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
 
 
+def _is_placeholder_place_name(name: str) -> bool:
+    return _normalize_free_text(name).casefold() in {
+        "", "importado manualmente", "sitio importado desde captura",
+    }
+
+
+def _review_based_place_name(text: str, identity: str) -> str:
+    excerpt = _normalize_free_text(text)
+    normalized = "".join(
+        char for char in unicodedata.normalize("NFKD", excerpt.casefold())
+        if not unicodedata.combining(char)
+    )
+    topics = [
+        (r"\b(frio|calefaccion)\b", "el fr\u00edo"),
+        (r"\b(paella|arroz|arroces)\b", "el arroz"),
+        (r"\b(espera|esperamos|tardaron|lentitud)\b", "la espera"),
+        (r"\b(ruido|ruidoso|ruidosa)\b", "el ruido"),
+        (r"\b(sucio|sucia|suciedad|limpieza)\b", "la limpieza"),
+        (r"\b(precio|precios|caro|cara)\b", "los precios"),
+    ]
+    label = next(
+        (f"Rese\u00f1as sobre {topic}" for pattern, topic in topics if re.search(pattern, normalized)),
+        "",
+    )
+    if not label:
+        fragment = re.split(r"[.!?\n]", excerpt, maxsplit=1)[0].strip() or excerpt
+        label = "Rese\u00f1a sobre: " + (fragment[:72].rstrip() or "sitio sin identificar")
+    # Keep unrelated unknown places separate even when their reviews share a topic.
+    digest = hashlib.sha256((identity or excerpt).encode("utf-8")).hexdigest()[:8]
+    return f"{label} ({digest})"
+
+
 def _data_uri_from_image_bytes(image_bytes: bytes, mime_type: str) -> str:
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
@@ -1367,7 +1473,11 @@ def _manual_review_id(
     review_url: str,
 ) -> str:
     if review_url:
-        digest_source = _normalize_review_url(review_url)
+        # A pasted link can be reused for different captures, so it is not unique.
+        digest_source = " | ".join([
+            _normalize_review_url(review_url),
+            _normalize_free_text(review_text).lower(),
+        ])
     else:
         digest_source = " | ".join(
             [
@@ -1380,6 +1490,31 @@ def _manual_review_id(
         )
     digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()[:24]
     return f"manual-image-review:{digest}"
+
+
+def _existing_capture_review(
+    storage: Storage,
+    review_id: str,
+    review_url: str,
+    review_text: str,
+) -> dict[str, Any] | None:
+    legacy_id = ""
+    if review_url:
+        digest = hashlib.sha256(_normalize_review_url(review_url).encode("utf-8")).hexdigest()[:24]
+        legacy_id = f"manual-image-review:{digest}"
+    with sqlite3.connect(storage.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM reviews WHERE review_id IN (?, ?)",
+            (review_id, legacy_id),
+        ).fetchall()
+    for row in rows:
+        if row["review_id"] == review_id:
+            return dict(row)
+    for row in rows:
+        if _normalize_free_text(row["text"]).lower() == _normalize_free_text(review_text).lower():
+            return dict(row)
+    return None
 
 
 def _owner_reply_storage_value(text: str, date: str) -> str:
@@ -1430,33 +1565,36 @@ def _extract_review_from_images(
         "place_name, reviewer_name, rating, date, review_text, owner_reply_text, owner_reply_date, place_address. "
         "rating debe ser entero entre 1 y 5 si se ve claramente; si no se ve, devuelve 0."
     )
-    request_payload = {
+    profile = openai_model_profile(settings.scoring.model)
+    reasoning_effort = settings.scoring.reasoning_effort
+    if reasoning_effort not in profile["reasoning_efforts"]:
+        reasoning_effort = profile["default_reasoning_effort"]
+    reasoning_mode = settings.scoring.reasoning_mode
+    if reasoning_mode not in profile["reasoning_modes"]:
+        reasoning_mode = profile["default_reasoning_mode"]
+    uses_reasoning = bool(reasoning_effort and reasoning_effort != "none") or "-pro" in settings.scoring.model.lower()
+    request_payload: dict[str, Any] = {
         "model": settings.scoring.model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "Eres un extractor OCR preciso. Devuelve solo JSON.",
-            },
+        "instructions": "Eres un extractor OCR preciso. Devuelve solo JSON.",
+        "input": [
             {
                 "role": "user",
-                "content": [{"type": "text", "text": prompt_text}]
+                "content": [{"type": "input_text", "text": prompt_text}]
                 + [
                     {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": _data_uri_from_image_bytes(
-                                item["bytes"],
-                                _infer_image_mime_type(item["bytes"], str(item.get("mime_type") or "")),
-                            )
-                        },
+                        "type": "input_image",
+                        "image_url": _data_uri_from_image_bytes(
+                            item["bytes"],
+                            _infer_image_mime_type(item["bytes"], str(item.get("mime_type") or "")),
+                        ),
                     }
                     for item in images
                 ],
             },
         ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
+        "text": {
+            "format": {
+                "type": "json_schema",
                 "name": "google_maps_review_from_image",
                 "strict": True,
                 "schema": {
@@ -1485,30 +1623,44 @@ def _extract_review_from_images(
                 },
             },
         },
-        "temperature": 0,
-        "max_completion_tokens": 1200,
+        # Reasoning tokens share this budget with the extracted review JSON.
+        "max_output_tokens": max(settings.scoring.max_output_tokens, 4096 if uses_reasoning else 1200),
+        "store": False,
     }
-    response = client.chat.completions.create(
-        model=request_payload["model"],
-        messages=request_payload["messages"],
-        response_format=request_payload["response_format"],
-        temperature=request_payload["temperature"],
-        max_completion_tokens=request_payload["max_completion_tokens"],
-    )
-    content = response.choices[0].message.content or ""
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                text = item.get("text")
-                if isinstance(text, str) and text.strip():
-                    parts.append(text)
-        content = "\n".join(parts)
-    payload = json.loads(str(content).strip())
+    if reasoning_effort or reasoning_mode:
+        request_payload["reasoning"] = {}
+        if reasoning_effort:
+            request_payload["reasoning"]["effort"] = reasoning_effort
+        if reasoning_mode:
+            request_payload["reasoning"]["mode"] = reasoning_mode
+    verbosity = settings.scoring.verbosity
+    if verbosity not in profile["verbosity_options"]:
+        verbosity = profile["default_verbosity"]
+    if verbosity:
+        request_payload["text"]["verbosity"] = verbosity
+    service_tier = settings.scoring.service_tier
+    if service_tier in profile["service_tiers"] and service_tier != "auto":
+        request_payload["service_tier"] = service_tier
+    if profile["supports_temperature"] and not uses_reasoning:
+        request_payload["temperature"] = 0
+    response = client.responses.create(**request_payload)
+    if response.status == "incomplete":
+        raise RuntimeError(
+            "La lectura de la captura qued\u00f3 incompleta. Aumenta el l\u00edmite de tokens "
+            "o reduce el esfuerzo de razonamiento y vuelve a importar."
+        )
+    content = response.output_text or ""
+    if not str(content).strip():
+        raise RuntimeError("El modelo no devolvi\u00f3 el texto de la captura. Vuelve a importar.")
+    try:
+        payload = json.loads(str(content).strip())
+    except ValueError as exc:
+        raise RuntimeError("El modelo no devolvi\u00f3 una rese\u00f1a v\u00e1lida desde la captura.") from exc
     if not isinstance(payload, dict):
         raise RuntimeError("No se pudo interpretar la reseña desde la captura.")
 
     place_name = _normalize_free_text(payload.get("place_name"))
+    place_identified = not _is_placeholder_place_name(place_name)
     reviewer_name = _normalize_free_text(payload.get("reviewer_name"))
     review_text = str(payload.get("review_text") or "").strip()
     owner_reply_text = str(payload.get("owner_reply_text") or "").strip()
@@ -1519,14 +1671,13 @@ def _extract_review_from_images(
         rating = int(payload.get("rating") or 0)
     except (TypeError, ValueError):
         rating = 0
-    rating = max(0, min(5, rating))
+    rating = rating if 1 <= rating <= 5 else 0
 
     if not review_text:
         raise RuntimeError("No pude leer el texto de la reseña en la captura.")
-    if rating <= 0:
-        raise RuntimeError("No pude identificar claramente la puntuación en estrellas.")
-    if not place_name:
-        place_name = "Sitio importado desde captura"
+    if _is_placeholder_place_name(place_name):
+        identity = _normalize_review_url(review_url) or " | ".join([reviewer_name, review_date, review_text])
+        place_name = _review_based_place_name(review_text, identity)
     if not reviewer_name:
         reviewer_name = "Autor desconocido"
     if not review_date:
@@ -1534,6 +1685,7 @@ def _extract_review_from_images(
 
     return {
         "place_name": place_name,
+        "place_identified": place_identified,
         "reviewer_name": reviewer_name,
         "rating": rating,
         "date": review_date,
@@ -1545,10 +1697,57 @@ def _extract_review_from_images(
     }
 
 
+def _capture_place_matches(metadata: dict, extracted: dict) -> bool:
+    if extracted.get("place_identified", True):
+        if _normalize_match_text(metadata.get("title") or metadata.get("name")) != _normalize_match_text(extracted["place_name"]):
+            return False
+    address = _normalize_match_text(extracted.get("place_address") or "")
+    actual_address = _normalize_match_text(metadata.get("address") or "")
+    return not address or set(address.split()).issubset(actual_address.split())
+
+
+def _resolve_capture_place(extracted: dict, storage: Storage, place: Place | None, settings) -> tuple[dict, str, str]:
+    if place and _place_cid(place.data_id):
+        return {}, "", ""
+    api_key = os.getenv(settings.providers.serpapi_api_key_env, "").strip()
+    if not api_key:
+        return {}, "", "No hay clave de SerpAPI para analizar otras rese\u00f1as del sitio."
+    if extracted["review_url"] and _is_google_review_link(extracted["review_url"]):
+        try:
+            resolved_url, data_id = _resolve_place_data_id(extracted["review_url"])
+            metadata = _fetch_import_place_metadata(data_id)
+            if metadata and _capture_place_matches(metadata, extracted):
+                return {**metadata, "data_id": data_id}, resolved_url, ""
+        except (RuntimeError, requests.RequestException):
+            pass
+    if not extracted.get("place_identified", True):
+        return {}, "", "No se pudo identificar el sitio. Se ha guardado la rese\u00f1a de la captura."
+    query = " ".join(filter(None, [extracted["place_name"], extracted["place_address"]]))
+    try:
+        matches, _ = _serpapi_maps_search(
+            query, api_key, settings.providers.serpapi_hl, settings.providers.serpapi_gl,
+            settings.app.data_dir / "api_cache", include_place_result=True,
+        )
+    except (RuntimeError, requests.RequestException, ValueError) as exc:
+        return {}, "", f"No se pudo localizar el sitio ({exc.__class__.__name__}). Se ha guardado la captura."
+    matching = {
+        _place_cid(str(item.get("data_id") or "")): item
+        for item in matches
+        if _place_cid(str(item.get("data_id") or "")) and _capture_place_matches(item, extracted)
+    }
+    if len(matching) == 1:
+        return next(iter(matching.values())), "", ""
+    return {}, "", (
+        "No se pudo identificar un \u00fanico sitio. Se ha guardado la captura; "
+        "a\u00f1ade su enlace de Google Maps para analizar m\u00e1s rese\u00f1as."
+    )
+
+
 def _import_review_from_images(
     images: list[dict[str, Any]],
     review_url: str = "",
     submitted_by: str = "",
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     if not images:
         raise ValueError("Selecciona una captura antes de importar.")
@@ -1565,20 +1764,9 @@ def _import_review_from_images(
     if total_bytes > IMAGE_IMPORT_TOTAL_MAX_BYTES:
         raise ValueError("Las capturas pesan demasiado en conjunto. Reduce la cantidad o el tamaño.")
 
+    if on_progress:
+        on_progress({"message": "Leyendo las capturas..."})
     extracted = _extract_review_from_images(images, review_url=review_url)
-    place_id = _manual_place_id(extracted["place_name"], extracted["review_url"])
-    storage = _storage()
-    if place_id in storage.get_processed_place_ids():
-        raise ValueError("Este sitio ya está marcado como procesado y no se evaluará de nuevo.")
-    submitted_by = _normalize_free_text(submitted_by)
-    settings = load_settings(CONFIG_PATH)
-    owner_reply = _owner_reply_storage_value(
-        extracted["owner_reply_text"],
-        extracted["owner_reply_date"],
-    )
-    humor = score_review(extracted["review_text"], owner_reply, extracted["rating"], settings.scoring)
-    safety = assess_safety(extracted["review_text"], owner_reply, settings.safety)
-
     review_id = _manual_review_id(
         extracted["place_name"],
         extracted["reviewer_name"],
@@ -1587,9 +1775,36 @@ def _import_review_from_images(
         extracted["rating"],
         extracted["review_url"],
     )
-
-    storage.upsert_place(
-        Place(
+    storage = _storage()
+    existing_review = _existing_capture_review(
+        storage, review_id, extracted["review_url"], extracted["review_text"],
+    )
+    inferred_place_id = _manual_place_id(extracted["place_name"], extracted["review_url"])
+    place_id = str(existing_review["place_id"]) if existing_review else inferred_place_id
+    place = _existing_import_place(storage, place_id)
+    if _import_place_is_processed(storage, inferred_place_id, place_id, place.data_id if place else ""):
+        raise ValueError("Este sitio ya está marcado como procesado y no se evaluará de nuevo.")
+    settings = load_settings(CONFIG_PATH)
+    if on_progress:
+        on_progress({"message": "Identificando el sitio de la captura..."})
+    metadata, resolved_url, warning = _resolve_capture_place(extracted, storage, place, settings)
+    if metadata:
+        raw = RawReview(
+            review_id, str(metadata["data_id"]), extracted["rating"], extracted["date"],
+            extracted["reviewer_name"], "", extracted["review_text"], "", resolved_url,
+        )
+        place = _upsert_place_from_reviews_payload(
+            storage, raw.place_id, {"place_info": metadata}, raw, preferred_place=place,
+        )
+        place_id = place.place_id
+        if existing_review and existing_review["place_id"] != place_id:
+            with sqlite3.connect(storage.db_path) as conn:
+                conn.execute("UPDATE reviews SET place_id=? WHERE review_id=?", (place_id, existing_review["review_id"]))
+        if resolved_url:
+            extracted["review_url"] = resolved_url
+    submitted_by = _normalize_free_text(submitted_by)
+    if not place:
+        place = Place(
             place_id=place_id,
             data_id=place_id,
             name=extracted["place_name"],
@@ -1600,10 +1815,27 @@ def _import_review_from_images(
             provider="manual_image",
             place_url="",
         )
-    )
-    already_exists = storage.review_exists(review_id)
-    storage.upsert_review(
-        Review(
+    if existing_review:
+        # Keep the saved site's identity, moderation, translations and exports.
+        review_id = str(existing_review["review_id"])
+        humor_score = int(existing_review["humor_score"] or 0)
+        if submitted_by:
+            with sqlite3.connect(storage.db_path) as conn:
+                conn.execute(
+                    "UPDATE reviews SET submitted_by=? WHERE review_id=?",
+                    (submitted_by, review_id),
+                )
+        else:
+            submitted_by = str(existing_review["submitted_by"] or "")
+        storage.upsert_place(place)
+    else:
+        owner_reply = _owner_reply_storage_value(
+            extracted["owner_reply_text"],
+            extracted["owner_reply_date"],
+        )
+        humor = score_review(extracted["review_text"], owner_reply, extracted["rating"], settings.scoring)
+        safety = assess_safety(extracted["review_text"], owner_reply, settings.safety)
+        review = Review(
             review_id=review_id,
             place_id=place_id,
             rating=extracted["rating"],
@@ -1621,22 +1853,31 @@ def _import_review_from_images(
             tags=",".join(humor.tags),
             submitted_by=submitted_by,
         )
-    )
-    if humor.score < settings.app.humor_threshold:
-        storage.update_status(review_id, "rejected")
+        storage.upsert_place(place)
+        storage.upsert_review(review)
+        humor_score = humor.score
+        if humor.score < settings.app.humor_threshold:
+            storage.update_status(review_id, "rejected")
 
-    return {
+    result = {
         "ok": True,
-        "already_exists": already_exists,
+        "already_exists": existing_review is not None,
         "review_id": review_id,
-        "place_name": extracted["place_name"],
-        "reviewer_name": extracted["reviewer_name"],
+        "place_id": place.place_id,
+        "place_name": place.name,
+        "reviewer_name": existing_review["reviewer_name"] if existing_review else extracted["reviewer_name"],
         "submitted_by": submitted_by,
-        "rating": extracted["rating"],
-        "humor_score": humor.score,
-        "detail_url": f"/review?id={quote(review_id, safe='')}",
+        "rating": existing_review["rating"] if existing_review else extracted["rating"],
+        "humor_score": humor_score,
+        "detail_url": f"/place?id={quote(place.place_id, safe='')}",
         "source": "image",
+        "warning": warning,
+        "new_reviews": 0 if existing_review else 1,
+        "additional_reviews": 0,
+        "inspected_reviews": 0,
+        "max_reviews": max(1, settings.app.max_reviews_per_place),
     }
+    return _analyze_additional_site_reviews(storage, place, settings, result, on_progress)
 
 
 def _normalize_google_host(host: str) -> str:
@@ -1782,11 +2023,18 @@ def _resolve_place_data_id_from_db(review_url: str) -> str:
         conn.row_factory = sqlite3.Row
         if target_key:
             rows = conn.execute(
-                "SELECT place_id, review_url FROM reviews WHERE COALESCE(review_url, '') <> ''"
+                """
+                SELECT r.place_id, r.review_url, p.data_id
+                FROM reviews r LEFT JOIN places p
+                  ON r.place_id = p.place_id OR r.place_id = p.data_id
+                WHERE COALESCE(r.review_url, '') <> ''
+                """
             ).fetchall()
             for row in rows:
                 if _review_url_key(str(row["review_url"] or "")) == target_key:
-                    return str(row["place_id"] or "").strip()
+                    data_id = str(row["data_id"] or row["place_id"] or "").strip()
+                    if _place_cid(data_id):
+                        return data_id
         if cid_hint:
             rows = conn.execute(
                 """
@@ -1877,14 +2125,51 @@ def _score_imported_review(raw: RawReview, settings, submitted_by: str = "") -> 
     )
 
 
+def _existing_import_place(storage: Storage, *identifiers: str) -> Place | None:
+    place_map = storage.get_place_map()
+    for identifier in identifiers:
+        if identifier in place_map:
+            return place_map[identifier]
+    for key, place in place_map.items():
+        if any(_same_place_identifier(key, identifier) for identifier in identifiers):
+            return place
+    return None
+
+
+def _import_place_is_processed(storage: Storage, *identifiers: str) -> bool:
+    return any(
+        _same_place_identifier(identifier, processed_id)
+        for identifier in identifiers for processed_id in storage.get_processed_place_ids()
+    )
+
+
 def _upsert_place_from_reviews_payload(
     storage: Storage,
     place_data_id: str,
     payload: dict,
     review: RawReview,
+    preferred_place: Place | None = None,
 ) -> Place:
-    existing = storage.get_place_map().get(place_data_id)
-    place_info = payload.get("place_info") or {}
+    existing = _existing_import_place(storage, place_data_id) or preferred_place
+    place_info = dict(_cached_place_metadata([place_data_id]))
+    for key in ("place_info", "place_results"):
+        if isinstance(payload.get(key), dict):
+            place_info.update({field: value for field, value in payload[key].items() if value not in (None, "", [])})
+    name = str(place_info.get("title") or place_info.get("name") or (existing.name if existing else "")).strip()
+    if (
+        _is_placeholder_place_name(name)
+        or not (place_info.get("address") or (existing.address if existing else ""))
+        or (place_info.get("rating") is None and (existing.average_rating if existing else None) is None)
+    ):
+        try:
+            place_info.update(_fetch_import_place_metadata(place_data_id))
+        except RuntimeError as exc:
+            emit_api_log("api_error", {"provider": "serpapi", "api": "google_maps_place", "error": str(exc)})
+    existing = existing or _existing_import_place(
+        storage, str(place_info.get("place_id") or ""), str(place_info.get("data_id") or ""),
+    )
+    if _import_place_is_processed(storage, place_data_id, existing.place_id if existing else ""):
+        raise ValueError("Este sitio ya est\u00e1 marcado como procesado y no se evaluar\u00e1 de nuevo.")
     search_metadata = payload.get("search_metadata") or {}
     total_reviews = place_info.get("reviews") or place_info.get("total_reviews") or (existing.total_reviews if existing else 0)
     try:
@@ -1894,22 +2179,34 @@ def _upsert_place_from_reviews_payload(
     try:
         average_rating = float(place_info.get("rating"))
     except (TypeError, ValueError):
-        average_rating = None
+        average_rating = existing.average_rating if existing else None
     address = str(place_info.get("address") or (existing.address if existing else "")).strip()
     country = place_location(
         address,
-        country_name(load_settings(CONFIG_PATH).discovery.country),
+        country_name(str(place_info.get("country") or (existing.country if existing else "")
+                         or load_settings(CONFIG_PATH).discovery.country)),
     )[2]
+    name = str(place_info.get("title") or place_info.get("name") or (existing.name if existing else "")).strip()
+    if _is_placeholder_place_name(name):
+        name = _review_based_place_name(review.text, place_data_id)
+    category = place_info.get("type") or (existing.category if existing else "manual")
+    if isinstance(category, list):
+        category = ", ".join(str(item) for item in category if item)
+    cid = _place_cid(place_data_id)
+    fallback_url = f"https://www.google.com/maps?cid={int(cid, 16)}" if cid else ""
     place = Place(
-        place_id=existing.place_id if existing else place_data_id,
-        data_id=place_data_id,
-        name=str(place_info.get("title") or place_info.get("name") or (existing.name if existing else "Importado manualmente")).strip(),
+        place_id=existing.place_id if existing else str(place_info.get("place_id") or place_data_id),
+        data_id=str(
+            (existing.data_id if existing and not str(existing.data_id or "").startswith("manual-image-place:") else "")
+            or place_info.get("data_id") or place_data_id
+        ),
+        name=name,
         address=address,
-        category=str(place_info.get("type") or (existing.category if existing else "manual")).strip() or "manual",
+        category=str(category).strip() or "manual",
         total_reviews=total_reviews,
         last_review_date=review.date,
         provider="serpapi",
-        place_url=str(place_info.get("link") or search_metadata.get("google_maps_url") or (existing.place_url if existing else "") or "").strip(),
+        place_url=str(place_info.get("link") or search_metadata.get("google_maps_url") or (existing.place_url if existing else "") or fallback_url).strip(),
         average_rating=average_rating,
         country=country,
     )
@@ -1988,7 +2285,7 @@ def _import_review_from_url(
         on_progress({"message": "Identificando el sitio de la reseña…"})
     resolved_url, place_data_id = _resolve_place_data_id(normalized_url)
     storage = _storage()
-    if place_data_id in storage.get_processed_place_ids():
+    if _import_place_is_processed(storage, place_data_id):
         raise ValueError("Este sitio ya está marcado como procesado y no se evaluará de nuevo.")
     if on_progress:
         on_progress({"message": "Localizando la reseña del enlace…"})
@@ -1996,15 +2293,16 @@ def _import_review_from_url(
     raw_review = _raw_review_from_serpapi(place_data_id, raw_payload, resolved_url)
     if not raw_review.text:
         raise RuntimeError("La reseña existe, pero no tiene texto para puntuar.")
-    if place_data_id in storage.get_processed_place_ids():
+    if _import_place_is_processed(storage, place_data_id):
         raise ValueError("Este sitio ya está marcado como procesado y no se evaluará de nuevo.")
 
     place = _upsert_place_from_reviews_payload(storage, place_data_id, payload, raw_review)
+    raw_review.place_id = place.place_id
     with sqlite3.connect(storage.db_path) as conn:
         conn.row_factory = sqlite3.Row
         existing_rows = conn.execute(
-            "SELECT review_id, review_url, humor_score FROM reviews WHERE place_id IN (?, ?)",
-            (place.place_id, place.data_id),
+            "SELECT review_id, review_url, humor_score FROM reviews WHERE place_id IN (?, ?, ?)",
+            (place.place_id, place.data_id, place_data_id),
         ).fetchall()
     existing_by_id = {str(row["review_id"]): dict(row) for row in existing_rows}
     existing_by_url = {
@@ -2051,8 +2349,32 @@ def _import_review_from_url(
         "max_reviews": max(1, settings.app.max_reviews_per_place),
         "warning": "",
     }
-    known_ids = set(existing_by_id) | {raw_review.review_id, review_id}
-    known_urls = set(existing_by_url) | {target_key}
+    return _analyze_additional_site_reviews(storage, place, settings, result, on_progress)
+
+
+def _analyze_additional_site_reviews(
+    storage: Storage,
+    place: Place,
+    settings,
+    result: dict[str, Any],
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    with sqlite3.connect(storage.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT review_id, review_url, reviewer_name, text FROM reviews WHERE place_id IN (?, ?)",
+            (place.place_id, place.data_id),
+        ).fetchall()
+    result["review_count"] = len(rows)
+    known_ids = {str(row["review_id"]) for row in rows}
+    known_urls = {
+        _review_url_key(str(row["review_url"]))
+        for row in rows if _extract_review_id_from_url(str(row["review_url"] or ""))
+    }
+    captured_content = {
+        (_normalize_free_text(row["text"]).casefold(), _normalize_match_text(row["reviewer_name"]))
+        for row in rows if str(row["review_id"]).startswith("manual-image-review:")
+    }
 
     def report() -> None:
         if on_progress:
@@ -2065,29 +2387,38 @@ def _import_review_from_url(
             })
 
     report()
+    if result.get("source") == "image" and not _place_cid(place.data_id):
+        return result
+    if result.get("source") == "image" and not os.getenv(settings.providers.serpapi_api_key_env, "").strip():
+        result["warning"] = "No hay clave de SerpAPI para analizar otras rese\u00f1as del sitio."
+        return result
     try:
         for raw in collect_reviews(
-            [place_data_id],
+            [place.data_id],
             settings.providers,
             result["max_reviews"],
             settings.app.data_dir / "api_cache",
             raise_on_error=True,
         ):
-            if place_data_id in storage.get_processed_place_ids():
+            if _import_place_is_processed(storage, place.place_id, place.data_id):
                 result["warning"] = "El sitio se ha marcado como procesado. Se ha detenido el análisis adicional."
                 break
             result["inspected_reviews"] += 1
             url_key = _review_url_key(raw.review_url)
             has_review_url = bool(_extract_review_id_from_url(raw.review_url))
+            content_key = (_normalize_free_text(raw.text).casefold(), _normalize_match_text(raw.reviewer_name))
             if (
                 not (raw.text or "").strip()
                 or raw.rating > 2
                 or raw.review_id in known_ids
                 or (has_review_url and url_key in known_urls)
                 or storage.review_exists(raw.review_id)
+                or content_key in captured_content
+                or (content_key[0], _normalize_match_text("Autor desconocido")) in captured_content
             ):
                 report()
                 continue
+            raw.place_id = place.place_id
             review = _score_imported_review(raw, settings)
             storage.upsert_review(review)
             if review.humor_score < settings.app.humor_threshold:
@@ -2100,7 +2431,11 @@ def _import_review_from_url(
             result["review_count"] += 1
             report()
     except Exception as exc:
-        result["warning"] = f"El análisis adicional se interrumpió: {exc}. Las reseñas guardadas están disponibles en el sitio."
+        error = str(exc)
+        api_key = os.getenv(settings.providers.serpapi_api_key_env, "").strip()
+        if api_key:
+            error = error.replace(api_key, "REDACTED")
+        result["warning"] = f"El análisis adicional se interrumpió: {error}. Las reseñas guardadas están disponibles en el sitio."
     return result
 
 
@@ -2109,14 +2444,17 @@ def _review_import_status() -> dict[str, Any]:
         return dict(_review_import_job)
 
 
-def _run_review_import(job_id: str, review_url: str, submitted_by: str) -> None:
+def _run_review_import(job_id: str, review_url: str, submitted_by: str, images: list[dict[str, Any]] | None = None) -> None:
     def update(fields: dict[str, Any]) -> None:
         with _review_import_lock:
             if _review_import_job.get("id") == job_id:
                 _review_import_job.update(fields)
 
     try:
-        result = _import_review_from_url(review_url, submitted_by, on_progress=update)
+        if images is None:
+            result = _import_review_from_url(review_url, submitted_by, on_progress=update)
+        else:
+            result = _import_review_from_images(images, review_url, submitted_by, on_progress=update)
         update({
             **result,
             "status": "completed",
@@ -2129,9 +2467,13 @@ def _run_review_import(job_id: str, review_url: str, submitted_by: str) -> None:
         update({"ok": False, "status": "failed", "message": str(exc)})
 
 
-def _start_review_import(review_url: str, submitted_by: str) -> dict[str, Any] | None:
+def _start_review_import(
+    review_url: str, submitted_by: str, images: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     normalized_url = _normalize_review_url(review_url)
-    if not normalized_url or not _is_google_review_link(normalized_url):
+    if images is not None and not images:
+        raise ValueError("Selecciona una captura antes de importar.")
+    if images is None and (not normalized_url or not _is_google_review_link(normalized_url)):
         raise ValueError("Pega un enlace de una reseña de Google Maps válido.")
     with _review_import_lock:
         if _review_import_job.get("status") == "running":
@@ -2140,13 +2482,14 @@ def _start_review_import(review_url: str, submitted_by: str) -> dict[str, Any] |
             "id": uuid4().hex,
             "ok": True,
             "status": "running",
-            "message": "Identificando el sitio de la reseña…",
+            "source": "url" if images is None else "image",
+            "message": "Identificando el sitio de la reseña…" if images is None else "Leyendo las capturas...",
         }
         _review_import_job.clear()
         _review_import_job.update(job)
     threading.Thread(
         target=_run_review_import,
-        args=(job["id"], normalized_url, submitted_by),
+        args=(job["id"], normalized_url, submitted_by, images),
         daemon=True,
     ).start()
     return job
@@ -2211,6 +2554,8 @@ def _avatar_text(value: str) -> str:
 
 def _render_stars(rating: int) -> str:
     rating = max(0, min(5, int(rating or 0)))
+    if rating == 0:
+        return '<span class="gm-no-rating">no rating</span>'
     stars = []
     for idx in range(5):
         cls = "gm-star-filled" if idx < rating else "gm-star-empty"
@@ -2729,7 +3074,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             try:
-                result = _import_review_from_images(images, review_url=review_url, submitted_by=submitted_by)
+                result = _start_review_import(review_url, submitted_by, images=images)
             except ValueError as exc:
                 self._send(
                     400,
@@ -2744,7 +3089,14 @@ class Handler(BaseHTTPRequestHandler):
                     "application/json",
                 )
                 return
-            self._send(200, json.dumps(result).encode("utf-8"), "application/json")
+            if result is None:
+                self._send(
+                    409,
+                    json.dumps({"ok": False, "message": "Ya hay un análisis de sitio en curso."}).encode("utf-8"),
+                    "application/json",
+                )
+                return
+            self._send(202, json.dumps(result).encode("utf-8"), "application/json")
             return
         if self.path == "/api/review-status":
             length = int(self.headers.get("Content-Length", "0"))

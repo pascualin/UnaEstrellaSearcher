@@ -1178,6 +1178,11 @@ a:hover { text-decoration: underline; }
 .gm-star-empty {
   color: #dadce0;
 }
+.gm-no-rating {
+  color: #5f6368;
+  font-size: 15px;
+  font-weight: 500;
+}
 .gm-rating-date {
   font-size: 15px;
   color: #5f6368;
@@ -1827,7 +1832,7 @@ body {
   color: #16202a;
   font-weight: 600;
 }
-#import-place-link[hidden] {
+.place-link-button[hidden] {
   display: none;
 }
 .place-detail-feedback {

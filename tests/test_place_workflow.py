@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from humor_reviews.notion_sync import NotionPage, _build_place_children, _place_page_title
+from humor_reviews.notion_sync import NotionPage, _build_children, _build_place_children, _place_page_title
 from humor_reviews.storage import Place, Review, Storage
 from humor_reviews.translation import TranslationResult
 from scripts import config_ui
@@ -302,6 +302,26 @@ class PlaceWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Acepta al menos una"):
             config_ui._export_place_to_notion("place-2", {})
 
+    @patch("scripts.config_ui.sync_place_reviews_page")
+    def test_export_preserves_the_sender_for_each_review(self, sync_page) -> None:
+        sync_page.return_value = NotionPage(page_id="notion-page", url="https://notion.so/page")
+        with sqlite3.connect(self.storage.db_path) as conn:
+            conn.execute("UPDATE reviews SET submitted_by='Ana' WHERE review_id='top'")
+        self.storage.update_status("middle", "accepted")
+
+        config_ui._export_place_to_notion("place-1", {"top": PNG_BYTES, "middle": PNG_BYTES})
+
+        reviews = sync_page.call_args.args[1]
+        self.assertEqual([review["review_id"] for review in reviews], ["top", "middle"])
+        self.assertEqual([review["submitted_by"] for review in reviews], ["Ana", ""])
+        children = _build_place_children(reviews)
+        attributions = [
+            block["paragraph"]["rich_text"][0]["text"]["content"]
+            for block in children if block["type"] == "paragraph"
+            and block["paragraph"]["rich_text"][0]["text"]["content"].startswith("Nos la env\u00eda:")
+        ]
+        self.assertEqual(attributions, ["Nos la env\u00eda: Ana"])
+
     def test_export_requires_a_capture_for_every_accepted_review(self) -> None:
         with self.assertRaisesRegex(ValueError, "captura de todas"):
             config_ui._export_place_to_notion("place-1", {})
@@ -317,6 +337,40 @@ class PlaceWorkflowTests(unittest.TestCase):
 
 
 class NotionPlaceDocumentTests(unittest.TestCase):
+    def test_sender_is_distinguished_from_the_review_author(self) -> None:
+        children = _build_children({
+            "submitted_by": "  Ana  ", "reviewer_name": "Luis", "review_text": "Una queja divertida",
+        })
+        self.assertEqual([block["type"] for block in children], ["paragraph", "paragraph", "quote"])
+        self.assertEqual(children[0]["paragraph"]["rich_text"][0]["text"]["content"], "Nos la env\u00eda: Ana")
+        self.assertEqual(children[1]["paragraph"]["rich_text"][0]["text"]["content"], "Luis")
+        self.assertEqual(children[2]["quote"]["rich_text"][0]["text"]["content"], "Una queja divertida")
+
+    def test_reviews_without_a_sender_keep_the_existing_format(self) -> None:
+        for submitted_by in (None, "", "   "):
+            with self.subTest(submitted_by=submitted_by):
+                children = _build_children({
+                    "submitted_by": submitted_by, "reviewer_name": "Luis", "review_text": "Texto",
+                })
+                self.assertEqual([block["type"] for block in children], ["paragraph", "quote"])
+                self.assertEqual(children[0]["paragraph"]["rich_text"][0]["text"]["content"], "Luis")
+
+    def test_grouped_document_keeps_each_sender_with_the_correct_review(self) -> None:
+        children = _build_place_children([
+            {"submitted_by": "Ana", "reviewer_name": "Primera", "review_text": "Uno", "humor_score": 90},
+            {"reviewer_name": "Segunda", "review_text": "Dos", "humor_score": 80},
+            {"submitted_by": "Pedro", "reviewer_name": "Tercera", "review_text": "Tres", "humor_score": 70},
+        ])
+        sections = [[]]
+        for block in children:
+            if block["type"] == "divider":
+                sections.append([])
+            elif block["type"] == "paragraph":
+                sections[-1].append(block["paragraph"]["rich_text"][0]["text"]["content"])
+        self.assertEqual(sections, [
+            ["Nos la env\u00eda: Ana", "Primera"], ["Segunda"], ["Nos la env\u00eda: Pedro", "Tercera"],
+        ])
+
     def test_title_contains_place_location_rating_and_selected_count(self) -> None:
         title = _place_page_title(
             {

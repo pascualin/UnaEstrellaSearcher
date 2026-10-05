@@ -239,6 +239,12 @@
 
     function drawStars(ctx, x, y, rating) {
       const full = Math.max(0, Math.min(5, Number(rating) || 0));
+      if (full === 0) {
+        ctx.font = '500 26px "Outfit", sans-serif';
+        ctx.fillStyle = "#5f6368";
+        ctx.fillText("no rating", x, y);
+        return;
+      }
       ctx.font = '700 28px "Outfit", sans-serif';
       for (let i = 0; i < 5; i += 1) {
         ctx.fillStyle = i < full ? "#fbbc04" : "#dadce0";

@@ -6,11 +6,28 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from humor_reviews.discover import _effective_categories, _name_matches, discover_places
+from humor_reviews.discover import _effective_categories, _name_matches, _serpapi_maps_search, discover_places
 from humor_reviews.settings import DiscoverySettings, ProviderSettings
 
 
 class NameContainsTests(unittest.TestCase):
+    @patch("humor_reviews.discover.requests.get")
+    def test_exact_place_lookup_can_return_a_direct_place_result_and_cache_it(self, get):
+        metadata = {"title": "Baby Nails", "data_id": "0xabc:0x123"}
+        get.return_value.json.return_value = {"place_results": metadata}
+        get.return_value.request.url = "https://serpapi.com/search.json?api_key=test-key"
+        get.return_value.status_code = 200
+        get.return_value.text = "{}"
+        with tempfile.TemporaryDirectory() as directory:
+            arguments = ("Baby Nails", "test-key", "es", "", Path(directory))
+            first, _ = _serpapi_maps_search(*arguments, include_place_result=True)
+            cached, _ = _serpapi_maps_search(*arguments, include_place_result=True)
+            default, _ = _serpapi_maps_search(*arguments)
+        self.assertEqual(first, [metadata])
+        self.assertEqual(cached, first)
+        self.assertEqual(default, [])
+        self.assertEqual(get.call_count, 2)
+
     def test_name_only_search_does_not_expand_default_categories(self) -> None:
         self.assertEqual(_effective_categories([], "dislexia"), [""])
         self.assertEqual(_effective_categories([], ""), [

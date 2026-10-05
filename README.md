@@ -330,6 +330,28 @@ reintentos de scoring. Sus reseñas tampoco entran en nuevas sugerencias del pip
 - importación de una reseña desde una o varias capturas pegadas
 - campo opcional para identificar a quien envió la reseña
 
+Después de importar una captura se abre el detalle del sitio en una pestaña nueva,
+con todas sus reseñas analizadas para seleccionar cuáles exportar a Notion.
+Capturas de reseñas distintas no se sobrescriben aunque se reutilice el mismo
+enlace. Reimportar la misma captura conserva su sitio, valoración y selección,
+sin volver a puntuarla ni crear un sitio vacío.
+Si se identifica el sitio por el enlace o por su nombre y dirección visibles,
+se analizan también sus otras reseñas con los mismos límites y filtros que en
+la importación por URL. Se agrupan en el mismo sitio, sin repetir reseñas ya
+guardadas ni analizar sitios procesados. El análisis funciona en segundo plano
+y muestra el progreso en la sección de capturas. El nombre del remitente sólo
+se asigna a la reseña enviada, no a las adicionales.
+Si hay varios sitios posibles o falla la búsqueda adicional, la captura queda
+guardada y se muestra el motivo; no se elige un sitio ambiguo.
+
+La lectura de capturas usa Responses de OpenAI y respeta las opciones del modelo
+configurado. Omite `temperature` cuando el modelo o el nivel de razonamiento no
+la admiten, y reserva tokens para extraer el texto completo. No guarda reseñas
+cuando la lectura queda incompleta.
+Si las estrellas no son visibles, la reseña se importa como `no rating`, sin
+deducirlas del texto. Esta etiqueta aparece en los detalles y las capturas para
+Notion, y la valoración de humor recibe la puntuación como desconocida.
+
 ### 6. Vista de detalle de reseña
 
 - navegación `Anterior` / `Siguiente`
@@ -376,6 +398,12 @@ En `Importar reseña`, pega el enlace de Google Maps y pulsa `Analizar reseña y
 Se admiten enlaces completos y enlaces cortos de `maps.app.goo.gl` y `goo.gl/maps`.
 El servidor resuelve las redirecciones y conserva la URL de la reseña aunque Google
 devuelva su pantalla de consentimiento.
+El sitio se identifica por su identificador de Google Maps y se consulta su ficha
+para guardar el nombre, la dirección y la valoración media aunque la respuesta de
+reseñas no los incluya. Si el sitio ya existe, se reutiliza en lugar de duplicarlo.
+Cuando no se puede obtener su nombre (también al importar capturas), se asigna un
+nombre descriptivo basado en el texto y un identificador corto para distinguir
+sitios desconocidos; no se agrupan todos como `Importado manualmente`.
 La reseña enlazada se incorpora junto con otras reseñas de una o dos estrellas del mismo sitio.
 La recogida adicional examina hasta `Máx. reseñas por sitio` entradas y omite las
 que no tienen texto o ya están guardadas. Las existentes conservan su puntuación,
@@ -386,6 +414,9 @@ Si la recogida adicional falla, se muestra un aviso y las reseñas ya guardadas 
 
 `Revisar reseñas del sitio` abre el detalle conjunto en otra pestaña, ordenado por humor.
 Desde ahí puedes aceptar o rechazar cada reseña y exportar todas las aceptadas a una única página de Notion, con sus capturas.
+Si indicas quién envió la reseña, su sección en Notion incluye `Nos la envía: Nombre`
+para poder mencionarle en el programa. La atribución se guarda solo en la reseña
+del enlace, no en las otras reseñas encontradas automáticamente en el mismo sitio.
 Los sitios marcados como procesados siguen excluidos del análisis.
 
 ## Copiado y exportación

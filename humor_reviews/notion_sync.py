@@ -280,6 +280,9 @@ def _place_page_title(place: dict[str, Any], reviews: list[dict[str, Any]]) -> s
 
 def _build_children(review: dict[str, Any]) -> list[dict[str, Any]]:
     children: list[dict[str, Any]] = []
+    submitted_by = str(review.get("submitted_by") or "").strip()
+    if submitted_by:
+        children.extend(_paragraph_block(f"Nos la env\u00eda: {submitted_by}"))
     reviewer = str(review.get("reviewer_name") or "Anónimo").strip() or "Anónimo"
     children.extend(_paragraph_block(reviewer))
     children.extend(_quote_blocks(str(review.get("review_text") or "").strip() or "(sin texto)"))

@@ -114,6 +114,8 @@
       const reviewLanguage = String(review.review_language || "").trim().toUpperCase();
       const ownerLanguage = String(review.owner_reply_language || "").trim().toUpperCase();
       const reviewer = escapeHtml(review.reviewer_name || "Anónimo");
+      const rating = Math.max(0, Math.min(5, Number(review.rating) || 0));
+      const ratingLabel = rating > 0 ? "★".repeat(rating) : "no rating";
       return `
         <article class="place-review-card status-${status || "pending"}" data-review-id="${escapeHtml(review.review_id)}">
           <div class="place-review-topline">
@@ -121,7 +123,7 @@
             <div class="place-review-score"><strong>${Number(review.humor_score || 0)}</strong><span>humor</span></div>
             <div class="place-review-author">
               <h2>${reviewerUrl ? `<a href="${reviewerUrl}" target="_blank" rel="noopener noreferrer">${reviewer}</a>` : reviewer}</h2>
-              <p>${"★".repeat(Math.max(0, Math.min(5, Number(review.rating || 0))))}<span>${escapeHtml(review.date || "")}</span></p>
+              <p>${ratingLabel}<span>${escapeHtml(review.date || "")}</span></p>
             </div>
             <span class="place-review-status">${statusLabel(status)}</span>
           </div>

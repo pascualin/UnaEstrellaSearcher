@@ -26,6 +26,8 @@ let runActive = false;
 let placeStatusSyncSequence = 0;
 let urlImportJobId = "";
 let urlImportTimer = null;
+let reviewImportSource = "url";
+let imageImportOpenJobId = "";
 
 const progressState = {
   mode: "",
@@ -1352,14 +1354,26 @@ function handlePastedImages(files) {
 }
 
 function renderUrlImportState(payload) {
+  if (payload.source) reviewImportSource = payload.source;
+  const imageImport = reviewImportSource === "image";
   const button = byId("import-review-url-button");
   const running = payload.status === "running";
   if (button) {
     button.disabled = running;
-    button.textContent = running ? "Analizando sitio..." : "Analizar reseña y sitio";
+    button.textContent = running && !imageImport ? "Analizando sitio..." : "Analizar reseña y sitio";
   }
-  setText("import-review-url-result", [payload.message, payload.warning].filter(Boolean).join(" "));
-  const link = byId("import-place-link");
+  const imageButton = byId("import-review-button");
+  if (imageButton) {
+    imageButton.disabled = running;
+    imageButton.textContent = running && imageImport ? "Analizando sitio..." : "Importar desde captura";
+  }
+  const bits = [payload.message, payload.warning].filter(Boolean);
+  if (imageImport && payload.status === "completed" && payload.rating !== undefined) {
+    bits.push(Number(payload.rating) > 0 ? `Estrellas: ${payload.rating}` : "Estrellas: no rating");
+    bits.push(`Humor: ${payload.humor_score}`);
+  }
+  setText(imageImport ? "import-review-result" : "import-review-url-result", bits.join(" "));
+  const link = byId(imageImport ? "import-capture-place-link" : "import-place-link");
   if (link) {
     link.hidden = !payload.detail_url;
     if (payload.detail_url) link.href = payload.detail_url;
@@ -1385,10 +1399,14 @@ async function pollUrlImport() {
       return;
     }
     renderUrlImportState(payload);
+    if (payload.status === "completed" && imageImportOpenJobId === jobId) {
+      imageImportOpenJobId = "";
+      if (payload.detail_url) window.open(payload.detail_url, "_blank", "noopener");
+    }
     if (payload.status === "running") scheduleUrlImportPoll();
   } catch (error) {
     if (jobId !== urlImportJobId) return;
-    setText("import-review-url-result", "Reconectando con el análisis del sitio...");
+    setText(reviewImportSource === "image" ? "import-review-result" : "import-review-url-result", "Reconectando con el análisis del sitio...");
     scheduleUrlImportPoll();
   }
 }
@@ -1415,7 +1433,7 @@ async function importReviewUrl() {
     setText("import-review-url-result", "Pega el enlace de la reseña antes de analizar el sitio.");
     return;
   }
-  renderUrlImportState({ status: "running", message: "Preparando el análisis del sitio..." });
+  renderUrlImportState({ status: "running", source: "url", message: "Preparando el análisis del sitio..." });
   try {
     const response = await fetch("/api/import-review", {
       method: "POST",
@@ -1444,13 +1462,13 @@ async function importReviewUrl() {
 
 async function importReview() {
   const button = byId("import-review-button");
+  if (button?.disabled) return;
   const files = importedReviewImages;
   if (!files.length) {
     setText("import-review-result", "Selecciona al menos una captura antes de importar.");
     return;
   }
-  button.disabled = true;
-  setText("import-review-result", `Leyendo ${files.length} captura(s) e importando reseña...`);
+  renderUrlImportState({ status: "running", source: "image", message: `Preparando ${files.length} captura(s)...` });
   try {
     const imagesPayload = await Promise.all(
       files.map((file) => new Promise((resolve, reject) => {
@@ -1471,23 +1489,19 @@ async function importReview() {
     });
     const payload = await res.json();
     if (!res.ok || !payload.ok) {
-      setText("import-review-result", payload.message || "No se pudo importar la reseña.");
+      renderUrlImportState({ status: "failed", message: payload.message || "No se pudo importar la reseña." });
+      if (res.status === 409) {
+        urlImportJobId = "";
+        await restoreUrlImport();
+      }
       return;
     }
-    const verb = payload.already_exists ? "actualizada" : "importada";
-    const bits = [
-      `Reseña ${verb}`,
-      payload.place_name ? `Lugar: ${payload.place_name}` : "",
-      payload.reviewer_name ? `Autor: ${payload.reviewer_name}` : "",
-      Number.isFinite(Number(payload.rating)) ? `Estrellas: ${payload.rating}` : "",
-      Number.isFinite(Number(payload.humor_score)) ? `Humor: ${payload.humor_score}` : "",
-    ].filter(Boolean);
-    setText("import-review-result", bits.join(" · "));
-    if (payload.detail_url) window.open(payload.detail_url, "_blank", "noopener");
+    urlImportJobId = payload.id;
+    imageImportOpenJobId = payload.id;
+    renderUrlImportState(payload);
+    scheduleUrlImportPoll();
   } catch (err) {
-    setText("import-review-result", "Error de red al importar la reseña.");
-  } finally {
-    button.disabled = false;
+    renderUrlImportState({ status: "failed", message: "Error de red al importar la reseña." });
   }
 }
 
