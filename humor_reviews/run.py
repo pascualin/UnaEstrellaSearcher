@@ -3,11 +3,27 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from dataclasses import asdict
+from dataclasses import asdict, replace
+from datetime import date
 from pathlib import Path
-from .celebration_strategy import CelebrationStrategy, build_celebration_strategy_from_text
+
+from .celebration_calendar import fetch_observances
+from .celebration_relevance import (
+    RelevanceResult,
+    score_celebration_relevance,
+)
+from .celebration_strategy import (
+    CelebrationStrategy,
+    SearchPlan,
+    build_celebration_strategy_from_text,
+)
 from .collect import collect_reviews
-from .discover import SearchQuery, discover_places, discover_places_for_queries
+from .discover import (
+    SearchQuery,
+    country_search_term,
+    discover_places,
+    discover_places_for_queries,
+)
 from .humor import score_review
 from .safety import assess_safety
 from .settings import load_settings
@@ -15,12 +31,23 @@ from .shortlist import build_shortlist, mark_shortlist
 from .storage import Place, Review, Storage
 
 
+MIN_NEW_REVIEWS_PER_OBSERVANCE = 3
+
+
 def run_discovery(storage: Storage, settings) -> tuple[int, list[str], dict[str, str]]:
     count = 0
     place_ids: list[str] = []
     place_names: dict[str, str] = {}
     cache_dir = settings.app.data_dir / "api_cache"
+    processed_place_ids = storage.get_processed_place_ids()
     for discovered in discover_places(settings.discovery, settings.providers, cache_dir):
+        identifiers = {
+            discovered.place.place_id,
+            discovered.place.data_id,
+        }
+        if processed_place_ids.intersection(identifiers):
+            _emit_processed_place_skipped(discovered.place)
+            continue
         storage.upsert_place(discovered.place)
         count += 1
         place_key = discovered.place.data_id or discovered.place.place_id
@@ -53,6 +80,7 @@ def run_collection(
     if place_ids is None:
         place_ids = storage.get_place_ids()
     place_map = storage.get_place_map()
+    processed_place_ids = storage.get_processed_place_ids()
     cache_dir = settings.app.data_dir / "api_cache"
     for place_id in place_ids:
         place_name = place_id
@@ -66,6 +94,15 @@ def run_collection(
         place = place_map.get(place_id)
         if place and place.data_id:
             place_data_id = place.data_id
+        identifiers = {
+            place_id,
+            place_data_id,
+            place.place_id if place else "",
+        }
+        if processed_place_ids.intersection(identifiers):
+            if place:
+                _emit_processed_place_skipped(place)
+            continue
 
         _emit_progress("place_start", {"place_id": place_id, "place_name": place_name})
         place_scores: list[int] = []
@@ -166,7 +203,14 @@ def run_shortlist(storage: Storage, settings, dry_run: bool = False) -> None:
 
 
 def run_weekly(storage: Storage, settings) -> None:
-    _emit_progress("run_started", {"message": "weekly"})
+    _emit_progress(
+        "run_started",
+        {
+            "message": "weekly",
+            "mode": "weekly",
+            "humor_threshold": settings.app.humor_threshold,
+        },
+    )
     discovered, discovered_place_ids, discovered_place_names = run_discovery(storage, settings)
     if not discovered_place_ids:
         _emit_progress("run_complete", {"discovered": discovered, "collected": 0})
@@ -252,7 +296,11 @@ def run_themed_celebrations(
         print("No celebrations text provided.")
         return
 
-    strategy = build_celebration_strategy_from_text(celebrations_text, settings.scoring)
+    strategy = build_celebration_strategy_from_text(
+        celebrations_text,
+        settings.scoring,
+        search_limit=max_searches,
+    )
     if not strategy.searches:
         print("No viable search strategy generated for those celebrations.")
         return
@@ -268,9 +316,15 @@ def run_themed_celebrations(
     seen_places: set[str] = set()
     place_ids: list[str] = []
     place_names: dict[str, str] = {}
+    processed_place_ids = storage.get_processed_place_ids()
 
     for discovered in discover_places_for_queries(queries, settings.discovery, settings.providers, cache_dir):
         place_key = discovered.place.data_id or discovered.place.place_id
+        if processed_place_ids.intersection(
+            {discovered.place.place_id, discovered.place.data_id}
+        ):
+            _emit_processed_place_skipped(discovered.place)
+            continue
         if place_key in seen_places:
             continue
         storage.upsert_place(discovered.place)
@@ -349,6 +403,512 @@ def run_themed_celebrations(
     )
 
 
+def run_episode_search(
+    storage: Storage,
+    settings,
+    episode_date: date,
+    target_reviews: int,
+    humor_threshold: int,
+    relevance_threshold: int,
+    max_searches: int,
+    max_places: int,
+    max_reviews_per_place: int,
+    selected_observance_names: list[str] | None = None,
+) -> None:
+    cache_dir = settings.app.data_dir / "api_cache"
+    _emit_progress(
+        "run_started",
+        {
+            "mode": "episode",
+            "episode_date": episode_date.isoformat(),
+            "target": target_reviews,
+            "humor_threshold": humor_threshold,
+            "relevance_threshold": relevance_threshold,
+        },
+    )
+    observances = fetch_observances(episode_date, cache_dir)
+    if selected_observance_names is not None:
+        selected_names = {
+            str(name).strip().casefold()
+            for name in selected_observance_names
+            if str(name).strip()
+        }
+        observances = [
+            observance
+            for observance in observances
+            if observance.name.strip().casefold() in selected_names
+        ]
+    _emit_progress(
+        "observances_found",
+        {
+            "episode_date": episode_date.isoformat(),
+            "observances": [item.name for item in observances],
+        },
+    )
+    if not observances:
+        _finish_episode_run(
+            storage,
+            episode_date,
+            target_reviews,
+            humor_threshold,
+            relevance_threshold,
+            observances,
+            CelebrationStrategy([], [], "Sin celebraciones", []),
+            [],
+            0,
+            0,
+            0,
+            0,
+            "no_observances",
+            0,
+        )
+        return
+
+    celebrations_text = "\n".join(item.name for item in observances)
+    strategy = build_celebration_strategy_from_text(
+        celebrations_text,
+        settings.scoring,
+        search_limit=max_searches,
+    )
+    selected_observances = strategy.selected_observances
+    per_observance_target = (
+        MIN_NEW_REVIEWS_PER_OBSERVANCE if len(selected_observances) > 1 else 0
+    )
+    search_limit = max(max_searches, len(selected_observances))
+    scoped_searches = _scope_episode_searches(
+        strategy.searches,
+        settings.discovery.regions,
+        settings.discovery.country,
+        search_limit,
+    )
+    _emit_progress(
+        "celebration_strategy",
+        {
+            "selected_observances": selected_observances,
+            "discarded_observances": strategy.discarded_observances,
+            "search_count": len(scoped_searches),
+            "per_observance_target": per_observance_target,
+        },
+    )
+
+    matches: list[dict[str, object]] = []
+    new_relevant_review_ids: set[str] = set()
+    new_relevant_by_observance = {name: 0 for name in selected_observances}
+
+    discovered_count = 0
+    collected_count = 0
+    funny_count = 0
+    reusable_count = 0
+    searches_attempted = 0
+    seen_places: set[str] = set()
+    themed_discovery = replace(
+        settings.discovery,
+        name_contains="",
+        min_total_reviews=min(settings.discovery.min_total_reviews, 1),
+    )
+    processed_place_ids = storage.get_processed_place_ids()
+
+    # Episode searches are goal-driven. The finite search plan is the safety bound;
+    # a site count must not stop the run before enough useful reviews are found.
+    _ = max_places
+    for search in scoped_searches:
+        if _episode_new_target_met(
+            new_relevant_review_ids,
+            new_relevant_by_observance,
+            selected_observances,
+            target_reviews,
+        ):
+            break
+        searches_attempted += 1
+        query = SearchQuery(query=search.query, region=search.region, category="themed_day")
+        for discovered in discover_places_for_queries(
+            [query],
+            themed_discovery,
+            settings.providers,
+            cache_dir,
+        ):
+            if _episode_new_target_met(
+                new_relevant_review_ids,
+                new_relevant_by_observance,
+                selected_observances,
+                target_reviews,
+            ):
+                break
+            place_key = discovered.place.data_id or discovered.place.place_id
+            if processed_place_ids.intersection(
+                {discovered.place.place_id, discovered.place.data_id}
+            ):
+                _emit_processed_place_skipped(discovered.place)
+                continue
+            if place_key in seen_places:
+                continue
+            seen_places.add(place_key)
+            storage.upsert_place(discovered.place)
+            discovered_count += 1
+            _emit_progress(
+                "discovered_place",
+                {
+                    "place_id": place_key,
+                    "place_name": discovered.place.name,
+                    "category": discovered.place.category,
+                },
+            )
+            _emit_progress("sites_found", {"count": discovered_count})
+            place_scores: list[int] = []
+            place_review_count = 0
+            place_failed = False
+            _emit_progress(
+                "place_start",
+                {"place_id": place_key, "place_name": discovered.place.name},
+            )
+            try:
+                for raw in collect_reviews(
+                    [place_key],
+                    settings.providers,
+                    max_reviews_per_place,
+                    cache_dir,
+                ):
+                    if _episode_new_target_met(
+                        new_relevant_review_ids,
+                        new_relevant_by_observance,
+                        selected_observances,
+                        target_reviews,
+                    ):
+                        break
+                    if not (raw.text or "").strip() or raw.rating > 2:
+                        continue
+                    if storage.review_exists(raw.review_id):
+                        continue
+                    humor = score_review(raw.text, raw.owner_reply, raw.rating, settings.scoring)
+                    safety = assess_safety(raw.text, raw.owner_reply, settings.safety)
+                    review = Review(
+                        review_id=raw.review_id,
+                        place_id=raw.place_id,
+                        rating=raw.rating,
+                        date=raw.date,
+                        reviewer_name=raw.reviewer_name,
+                        reviewer_profile_url=raw.reviewer_profile_url,
+                        text=raw.text,
+                        summary=humor.summary,
+                        owner_reply=raw.owner_reply,
+                        review_url=raw.review_url,
+                        humor_score=humor.score,
+                        humor_notes=humor.notes,
+                        safety_label=safety.label,
+                        safety_notes=safety.notes,
+                        tags=",".join(humor.tags),
+                    )
+                    storage.upsert_review(review)
+                    collected_count += 1
+                    place_review_count += 1
+                    place_scores.append(humor.score)
+                    _emit_progress(
+                        "review_scored",
+                        {
+                            "review_id": review.review_id,
+                            "place_id": place_key,
+                            "place_data_id": discovered.place.data_id,
+                            "google_place_id": discovered.place.place_id,
+                            "place_name": discovered.place.name,
+                            "review_count": place_review_count,
+                            "total_collected": collected_count,
+                            "score": humor.score,
+                            "reviewer_name": review.reviewer_name,
+                        },
+                    )
+                    if humor.score < humor_threshold:
+                        storage.update_status(review.review_id, "rejected")
+                        continue
+                    funny_count += 1
+                    relevance = _score_theme_relevance(
+                        review,
+                        discovered.place,
+                        selected_observances,
+                        settings,
+                    )
+                    candidate = relevance.score >= relevance_threshold
+                    if candidate:
+                        if review.review_id not in new_relevant_review_ids:
+                            new_relevant_review_ids.add(review.review_id)
+                            matched_observance = _canonical_observance(
+                                relevance.observance,
+                                selected_observances,
+                            )
+                            if matched_observance:
+                                new_relevant_by_observance[matched_observance] += 1
+                    else:
+                        reusable_count += 1
+                    matches.append(_theme_match(review.review_id, relevance, candidate, "search"))
+                    _emit_theme_review(
+                        review,
+                        discovered.place,
+                        relevance,
+                        candidate,
+                        "search",
+                    )
+            except Exception as exc:
+                place_failed = True
+                _emit_progress(
+                    "place_failed",
+                    {
+                        "place_id": place_key,
+                        "place_name": discovered.place.name,
+                        "error": str(exc),
+                    },
+                )
+            if not place_failed:
+                _emit_progress(
+                    "place_done",
+                    {
+                        "place_id": place_key,
+                        "place_name": discovered.place.name,
+                        "review_count": place_review_count,
+                        "total_collected": collected_count,
+                        "scores": place_scores,
+                    },
+                )
+
+    target_met = _episode_new_target_met(
+        new_relevant_review_ids,
+        new_relevant_by_observance,
+        selected_observances,
+        target_reviews,
+    )
+    completion_reason = "target_met" if target_met else "searches_exhausted"
+    _finish_episode_run(
+        storage,
+        episode_date,
+        target_reviews,
+        humor_threshold,
+        relevance_threshold,
+        observances,
+        strategy,
+        matches,
+        discovered_count,
+        collected_count,
+        funny_count,
+        reusable_count,
+        completion_reason,
+        searches_attempted,
+    )
+
+
+def _scope_episode_searches(
+    searches: list[SearchPlan],
+    configured_regions: list[str],
+    country: str,
+    limit: int,
+) -> list[SearchPlan]:
+    regions = list(
+        dict.fromkeys(
+            str(region or "").strip()
+            for region in configured_regions
+            if str(region or "").strip()
+        )
+    )
+    scopes = regions or [country_search_term(country)]
+    if not scopes[0]:
+        scopes = [""]
+
+    scoped: list[SearchPlan] = []
+    seen: set[tuple[str, str]] = set()
+    for search in searches:
+        for scope in scopes:
+            key = (search.query.strip().casefold(), scope.casefold())
+            if not key[0] or key in seen:
+                continue
+            seen.add(key)
+            scoped.append(
+                SearchPlan(
+                    query=search.query,
+                    region=scope,
+                    rationale=search.rationale,
+                )
+            )
+            if len(scoped) >= limit:
+                return scoped
+    return scoped
+
+
+def _score_theme_relevance(
+    review: Review,
+    place: Place | None,
+    observances: list[str],
+    settings,
+) -> RelevanceResult:
+    if not observances:
+        return RelevanceResult(0, "", "No se seleccionó ninguna celebración aplicable.")
+    try:
+        return score_celebration_relevance(
+            review.translated_text or review.text,
+            review.translated_owner_reply or review.owner_reply,
+            place.name if place else "",
+            place.category if place else "",
+            observances,
+            settings.scoring,
+        )
+    except Exception as exc:
+        return RelevanceResult(0, "", f"Error de relevancia: {exc.__class__.__name__}")
+
+
+def _emit_processed_place_skipped(place: Place) -> None:
+    _emit_progress(
+        "processed_place_skipped",
+        {
+            "place_id": place.place_id or place.data_id,
+            "place_name": place.name,
+        },
+    )
+
+
+def _episode_new_target_met(
+    review_ids: set[str],
+    counts_by_observance: dict[str, int],
+    selected_observances: list[str],
+    target_reviews: int,
+) -> bool:
+    if len(review_ids) < target_reviews:
+        return False
+    if len(selected_observances) <= 1:
+        return True
+    return all(
+        counts_by_observance.get(observance, 0) >= MIN_NEW_REVIEWS_PER_OBSERVANCE
+        for observance in selected_observances
+    )
+
+
+def _canonical_observance(value: str, selected_observances: list[str]) -> str:
+    normalized = str(value or "").strip().casefold()
+    return next(
+        (
+            observance
+            for observance in selected_observances
+            if observance.strip().casefold() == normalized
+        ),
+        "",
+    )
+
+
+def _theme_match(
+    review_id: str,
+    relevance: RelevanceResult,
+    candidate: bool,
+    source: str,
+) -> dict[str, object]:
+    return {
+        "review_id": review_id,
+        "observance": relevance.observance,
+        "relevance_score": relevance.score,
+        "relevance_notes": relevance.notes,
+        "is_episode_candidate": candidate,
+        "source": source,
+    }
+
+
+def _emit_theme_review(
+    review: Review,
+    place: Place | None,
+    relevance: RelevanceResult,
+    candidate: bool,
+    source: str,
+) -> None:
+    _emit_progress(
+        "theme_review_scored",
+        {
+            "review_id": review.review_id,
+            "place_id": (place.data_id or place.place_id) if place else review.place_id,
+            "place_data_id": place.data_id if place else review.place_id,
+            "google_place_id": place.place_id if place else "",
+            "place_name": place.name if place else review.place_id,
+            "reviewer_name": review.reviewer_name,
+            "humor_score": review.humor_score,
+            "relevance_score": relevance.score,
+            "observance": relevance.observance,
+            "relevance_notes": relevance.notes,
+            "episode_candidate": candidate,
+            "source": source,
+        },
+    )
+
+
+def _finish_episode_run(
+    storage: Storage,
+    episode_date: date,
+    target_reviews: int,
+    humor_threshold: int,
+    relevance_threshold: int,
+    observances,
+    strategy: CelebrationStrategy,
+    matches: list[dict[str, object]],
+    discovered_count: int,
+    collected_count: int,
+    funny_count: int,
+    reusable_count: int,
+    completion_reason: str,
+    searches_attempted: int,
+) -> None:
+    new_relevant_count = sum(
+        bool(match["is_episode_candidate"])
+        for match in matches
+    )
+    new_relevant_by_observance = {
+        observance: sum(
+            bool(match["is_episode_candidate"])
+            and _canonical_observance(str(match["observance"]), [observance]) == observance
+            for match in matches
+        )
+        for observance in strategy.selected_observances
+    }
+    per_observance_target = (
+        MIN_NEW_REVIEWS_PER_OBSERVANCE
+        if len(strategy.selected_observances) > 1
+        else 0
+    )
+    relevant_count = new_relevant_count
+    run_id = storage.record_celebration_run(
+        year=episode_date.year,
+        month=episode_date.month,
+        day=episode_date.day,
+        target_funny_reviews=target_reviews,
+        humor_threshold=humor_threshold,
+        relevance_threshold=relevance_threshold,
+        observances_json=json.dumps([asdict(item) for item in observances], ensure_ascii=False),
+        strategy_json=json.dumps(_strategy_to_dict(strategy), ensure_ascii=False),
+        discovered_count=discovered_count,
+        collected_count=collected_count,
+        funny_count=funny_count,
+        relevant_count=relevant_count,
+        reusable_count=reusable_count,
+    )
+    for match in matches:
+        storage.record_celebration_match(run_id=run_id, **match)
+    _emit_progress(
+        "run_complete",
+        {
+            "mode": "episode",
+            "episode_date": episode_date.isoformat(),
+            "discovered": discovered_count,
+            "collected": collected_count,
+            "relevant": relevant_count,
+            "new_relevant": new_relevant_count,
+            "new_relevant_by_observance": new_relevant_by_observance,
+            "per_observance_target": per_observance_target,
+            "reusable": reusable_count,
+            "target": target_reviews,
+            "target_met": completion_reason == "target_met",
+            "completion_reason": completion_reason,
+            "searches_attempted": searches_attempted,
+        },
+    )
+    print(
+        "Episode search completed: "
+        f"date={episode_date.isoformat()}, new={new_relevant_count}/{target_reviews}, "
+        f"per_observance={new_relevant_by_observance}, "
+        f"reusable={reusable_count}, discovered={discovered_count}, collected={collected_count}, "
+        f"reason={completion_reason}, searches={searches_attempted}"
+    )
+
+
 def _load_env(path: Path) -> None:
     if not path.exists():
         return
@@ -422,6 +982,16 @@ def main() -> None:
     themed_celebrations.add_argument("--max-places", type=int, default=12)
     themed_celebrations.add_argument("--max-reviews-per-place", type=int, default=10)
 
+    episode_search = sub.add_parser("episode-search")
+    episode_search.add_argument("--date", required=True)
+    episode_search.add_argument("--target", type=int, default=5)
+    episode_search.add_argument("--humor-threshold", type=int)
+    episode_search.add_argument("--relevance-threshold", type=int, default=60)
+    episode_search.add_argument("--max-searches", type=int, default=30)
+    episode_search.add_argument("--max-places", type=int, default=30)
+    episode_search.add_argument("--max-reviews-per-place", type=int, default=10)
+    episode_search.add_argument("--observance", action="append", dest="observances")
+
     args = parser.parse_args()
 
     _load_env(Path(".env"))
@@ -446,7 +1016,14 @@ def main() -> None:
         run_shortlist(storage, settings, dry_run=args.dry_run)
     elif args.command == "weekly":
         if args.no_api:
-            _emit_progress("run_started", {"message": "weekly_no_api"})
+            _emit_progress(
+                "run_started",
+                {
+                    "message": "weekly_no_api",
+                    "mode": "weekly",
+                    "humor_threshold": settings.app.humor_threshold,
+                },
+            )
             run_shortlist(storage, settings, dry_run=True)
             _emit_progress("run_complete", {"discovered": 0, "collected": 0, "mode": "no_api"})
             print("Weekly rehearsal complete (--no-api). No external API calls were made.")
@@ -473,6 +1050,23 @@ def main() -> None:
             max_searches=args.max_searches,
             max_places=args.max_places,
             max_reviews_per_place=args.max_reviews_per_place,
+        )
+    elif args.command == "episode-search":
+        run_episode_search(
+            storage,
+            settings,
+            episode_date=date.fromisoformat(args.date),
+            target_reviews=max(1, args.target),
+            humor_threshold=(
+                args.humor_threshold
+                if args.humor_threshold is not None
+                else settings.app.humor_threshold
+            ),
+            relevance_threshold=max(0, min(100, args.relevance_threshold)),
+            max_searches=max(1, args.max_searches),
+            max_places=max(1, args.max_places),
+            max_reviews_per_place=max(1, args.max_reviews_per_place),
+            selected_observance_names=args.observances,
         )
 
 

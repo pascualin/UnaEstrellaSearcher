@@ -447,7 +447,7 @@ def _render_prompt(template: str, review_text: str, owner_reply: str, rating: in
     rendered = str(template or "")
     rendered = rendered.replace("{review_text}", review_text)
     rendered = rendered.replace("{owner_reply}", owner_reply)
-    rendered = rendered.replace("{rating}", str(rating))
+    rendered = rendered.replace("{rating}", str(rating) if rating else "no rating")
     lines = [
         line
         for line in rendered.splitlines()

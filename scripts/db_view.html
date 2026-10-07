@@ -66,6 +66,7 @@
       placeSort: "db.placeSort",
       processedFilter: "db.processedFilter",
     };
+    let dbLoadSequence = 0;
 
     function loadFilterState() {
       const storedSort = sessionStorage.getItem(SESSION_KEYS.placeSort);
@@ -111,11 +112,12 @@
         const name = escapeHtml(row.place_name || "Sitio");
         const address = escapeHtml(row.place_address || "Sin dirección");
         const category = escapeHtml(row.place_category || "Lugar");
-        const placeId = escapeHtml(row.place_id || "");
+        const placeHref = `/place?id=${encodeURIComponent(String(row.place_id || ""))}`;
         const processed = Boolean(String(row.processed_at || "").trim());
         const updatedAt = formatUpdatedAt(row.updated_at);
+        const processedAt = formatUpdatedAt(row.processed_at);
         return `
-          <article class="place-result-card" data-place-id="${placeId}" tabindex="0" role="link">
+          <a class="place-result-card ${processed ? "is-processed" : "is-unprocessed"}" href="${escapeHtml(placeHref)}" target="_blank" rel="noopener">
             <div class="place-result-score" aria-label="Puntuación máxima de humor">
               <strong>${Number(row.top_humor_score || 0)}</strong>
               <span>mejor humor</span>
@@ -123,28 +125,33 @@
             <div class="place-result-copy">
               <div class="place-result-heading">
                 <h4>${name}</h4>
-                <span>${Number(row.review_count || 0)} reseñas</span>
+                <div class="place-result-heading-meta">
+                  <strong class="place-status-badge ${processed ? "is-processed" : "is-pending"}">${processed ? "PROCESADO" : "PENDIENTE"}</strong>
+                  <span>${Number(row.review_count || 0)} reseñas</span>
+                </div>
               </div>
-              <p>${category} · ${address}${updatedAt ? ` · Actualizado ${escapeHtml(updatedAt)}` : ""}</p>
+              <p>${category} · ${address}${processedAt ? ` · Procesado ${escapeHtml(processedAt)}` : (updatedAt ? ` · Actualizado ${escapeHtml(updatedAt)}` : "")}</p>
               <div class="place-result-counts" aria-label="Estados de las reseñas">
-                <span class="${processed ? "is-processed" : "is-pending"}">${processed ? "Procesado" : "Pendiente de procesar"}</span>
                 <span class="is-pending">${Number(row.pending_count || 0)} vacías</span>
                 <span class="is-accepted">${Number(row.accepted_count || 0)} aceptadas</span>
                 <span class="is-rejected">${Number(row.rejected_count || 0)} rechazadas</span>
               </div>
             </div>
             <span class="place-result-open" aria-hidden="true">›</span>
-          </article>`;
+          </a>`;
       }).join("");
     }
 
     async function loadDb() {
+      const loadSequence = ++dbLoadSequence;
       const res = await fetch(`/api/db-data?sort=${encodeURIComponent(placeSort.value)}&processed=${encodeURIComponent(processedFilter.value)}`);
+      if (loadSequence !== dbLoadSequence) return;
       if (!res.ok) {
         byId("db-summary").innerHTML = "<div class='hint'>No se pudo cargar la base de datos.</div>";
         return;
       }
       const payload = await res.json();
+      if (loadSequence !== dbLoadSequence) return;
       const summary = payload.summary || {};
       byId("db-summary").innerHTML = [
         `<div class=\"db-summary-card\"><div class=\"label\">Sitios</div><div class=\"value\">${summary.places || 0}</div></div>`,
@@ -158,19 +165,6 @@
         `<div class=\"db-summary-card\"><div class=\"label\">Reseñas vacías (total)</div><div class=\"value\">${summary.empty_reviews_skipped_total || 0}</div></div>`,
       ].join("");
       renderPlaces(byId("db-places"), payload.places || []);
-      document.querySelectorAll(".place-result-card").forEach((card) => {
-        const openPlace = () => {
-          const placeId = card.dataset.placeId;
-          if (placeId) window.location.href = `/place?id=${encodeURIComponent(placeId)}`;
-        };
-        card.addEventListener("click", openPlace);
-        card.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            openPlace();
-          }
-        });
-      });
     }
 
     byId("db-refresh").addEventListener("click", loadDb);

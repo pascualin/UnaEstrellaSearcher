@@ -50,6 +50,7 @@ def _serpapi_maps_search(
     no_cache: bool = False,
     location: str | None = None,
     _retry_without_location: bool = True,
+    include_place_result: bool = False,
 ) -> tuple[list[dict], bool]:
     cache_payload = {
         "query": query,
@@ -57,6 +58,8 @@ def _serpapi_maps_search(
         "gl": gl,
         "location": location or "",
     }
+    if include_place_result:
+        cache_payload["include_place_result"] = True
     cached = load_cached_json(cache_dir, "discover", cache_payload)
     if isinstance(cached, list):
         emit_api_log(
@@ -83,9 +86,10 @@ def _serpapi_maps_search(
         "type": "search",
         "q": query,
         "hl": hl,
-        "gl": gl,
         "api_key": api_key,
     }
+    if gl:
+        params["gl"] = gl
     if no_cache:
         params["no_cache"] = "true"
     if location:
@@ -107,8 +111,11 @@ def _serpapi_maps_search(
         status = getattr(exc.response, "status_code", None)
         if status == 400 and location and _retry_without_location:
             # Some generic locations (e.g. country-only) are rejected by SerpApi.
+            fallback_query = query
+            if location.casefold() not in query.casefold():
+                fallback_query = f"{query} {location}"
             return _serpapi_maps_search(
-                query=query,
+                query=fallback_query,
                 api_key=api_key,
                 hl=hl,
                 gl=gl,
@@ -116,6 +123,7 @@ def _serpapi_maps_search(
                 no_cache=no_cache,
                 location=None,
                 _retry_without_location=False,
+                include_place_result=include_place_result,
             )
         redacted = _redact_request_url(getattr(exc, "request", None))
         body = _response_excerpt(getattr(exc, "response", None))
@@ -130,6 +138,8 @@ def _serpapi_maps_search(
         ) from exc
     data = resp.json()
     results = data.get("local_results", []) or []
+    if include_place_result and not results and isinstance(data.get("place_results"), dict):
+        results = [data["place_results"]]
     emit_api_log(
         "api_response",
         {
@@ -206,7 +216,7 @@ def discover_places(
     for region in regions:
         for category in categories:
             query_category = _normalize_category(category)
-            effective_location = region or _country_search_term(discovery.country)
+            effective_location = region or country_search_term(discovery.country)
             query = _build_query(query_category, discovery.name_contains, effective_location)
             try:
                 results, location_used = _serpapi_maps_search(
@@ -458,7 +468,7 @@ def _progress_category_label(category: str, query: str) -> str:
     return "búsqueda general"
 
 
-def _country_search_term(country: str) -> str:
+def country_search_term(country: str) -> str:
     code = str(country or "").strip().upper()
     aliases = {
         "US": "United States",

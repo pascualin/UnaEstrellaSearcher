@@ -106,7 +106,7 @@ def load_settings(path: str | Path = "config.yaml") -> Settings:
         require_recent_days=int(discovery_raw.get("require_recent_days", 120)),
     )
 
-    country_code = str(discovery_raw.get("country", "US")).strip().lower() or "us"
+    country_code = str(discovery_raw.get("country", "US")).strip().lower()
     providers = ProviderSettings(
         serpapi_api_key_env=str(providers_raw.get("api_key_env", "SERPAPI_API_KEY")),
         serpapi_hl=str(providers_raw.get("hl", "es")),

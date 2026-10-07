@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from humor_reviews.notion_sync import NotionPage, _build_place_children, _place_page_title
+from humor_reviews.notion_sync import NotionPage, _build_children, _build_place_children, _place_page_title
 from humor_reviews.storage import Place, Review, Storage
 from humor_reviews.translation import TranslationResult
 from scripts import config_ui
@@ -123,6 +123,109 @@ class PlaceWorkflowTests(unittest.TestCase):
         assert detail is not None
         self.assertFalse(detail["place"]["processed"])
 
+    def test_place_statuses_resolve_place_and_data_ids(self) -> None:
+        self.assertTrue(config_ui._set_place_processed("data-1", True))
+
+        statuses = config_ui._fetch_place_statuses(
+            ["place-1", "data-1", "place-2", "missing", "data-1"]
+        )
+
+        self.assertEqual(
+            statuses,
+            {"place-1": True, "data-1": True, "place-2": False},
+        )
+
+    def test_marking_place_processed_keeps_detail_open(self) -> None:
+        detail_html = (config_ui.ROOT / "scripts" / "place_detail.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn('window.location.assign("/db")', detail_html)
+        self.assertIn("Sitio marcado como procesado.", detail_html)
+
+    def test_database_cards_show_processed_and_pending_badges(self) -> None:
+        db_html = (config_ui.ROOT / "scripts" / "db_view.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('processed ? "PROCESADO" : "PENDIENTE"', db_html)
+        self.assertIn('processed ? "is-processed" : "is-unprocessed"', db_html)
+
+    def test_processed_places_are_excluded_from_automated_storage_queries(self) -> None:
+        self.assertTrue(config_ui._set_place_processed("place-1", True))
+        with sqlite3.connect(self.data_dir / "humor_reviews.db") as conn:
+            conn.execute(
+                "UPDATE reviews SET humor_notes='Parse failure' WHERE review_id='middle'"
+            )
+
+        candidates = self.storage.fetch_candidates(0, allow_repeat=True)
+        rescore = self.storage.fetch_reviews_needing_rescore()
+
+        self.assertEqual([review.review_id for review in candidates], ["other"])
+        self.assertEqual(rescore, [])
+        self.assertEqual(self.storage.get_place_ids(), ["data-2"])
+        self.assertEqual(
+            set(self.storage.get_place_ids(include_processed=True)),
+            {"data-1", "data-2"},
+        )
+        self.assertEqual(
+            self.storage.get_processed_place_ids(),
+            {"place-1", "data-1"},
+        )
+
+    @patch("scripts.config_ui.score_review")
+    @patch("scripts.config_ui._extract_review_from_images")
+    def test_image_import_does_not_score_a_processed_place(self, extract, score) -> None:
+        place_id = config_ui._manual_place_id("Sitio procesado", "")
+        self.storage.upsert_place(
+            Place(
+                place_id,
+                place_id,
+                "Sitio procesado",
+                "Madrid",
+                "manual_image",
+                1,
+                None,
+                "manual_image",
+            )
+        )
+        self.assertTrue(config_ui._set_place_processed(place_id, True))
+        extract.return_value = {
+            "place_name": "Sitio procesado",
+            "reviewer_name": "Autor",
+            "rating": 1,
+            "date": "hoy",
+            "review_text": "Texto",
+            "owner_reply_text": "",
+            "owner_reply_date": "",
+            "place_address": "Madrid",
+            "review_url": "",
+        }
+
+        with self.assertRaisesRegex(ValueError, "ya está marcado como procesado"):
+            config_ui._import_review_from_images([{"bytes": PNG_BYTES}])
+
+        score.assert_not_called()
+
+    @patch("scripts.config_ui.score_review")
+    @patch("scripts.config_ui._find_review_in_serpapi")
+    @patch("scripts.config_ui._resolve_place_data_id")
+    def test_url_import_stops_before_fetching_a_processed_place(
+        self,
+        resolve_place,
+        find_review,
+        score,
+    ) -> None:
+        self.assertTrue(config_ui._set_place_processed("place-1", True))
+        resolve_place.return_value = ("https://example.com/review", "data-1")
+
+        with patch.dict(config_ui.os.environ, {"SERPAPI_API_KEY": "test-key"}):
+            with self.assertRaisesRegex(ValueError, "ya está marcado como procesado"):
+                config_ui._import_review_from_url("https://example.com/review")
+
+        find_review.assert_not_called()
+        score.assert_not_called()
+
     def test_date_sort_uses_latest_review_in_each_site(self) -> None:
         with sqlite3.connect(self.data_dir / "humor_reviews.db") as conn:
             conn.execute("UPDATE reviews SET updated_at='2024-01-01T00:00:00' WHERE place_id IN ('place-1', 'data-1')")
@@ -199,6 +302,26 @@ class PlaceWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Acepta al menos una"):
             config_ui._export_place_to_notion("place-2", {})
 
+    @patch("scripts.config_ui.sync_place_reviews_page")
+    def test_export_preserves_the_sender_for_each_review(self, sync_page) -> None:
+        sync_page.return_value = NotionPage(page_id="notion-page", url="https://notion.so/page")
+        with sqlite3.connect(self.storage.db_path) as conn:
+            conn.execute("UPDATE reviews SET submitted_by='Ana' WHERE review_id='top'")
+        self.storage.update_status("middle", "accepted")
+
+        config_ui._export_place_to_notion("place-1", {"top": PNG_BYTES, "middle": PNG_BYTES})
+
+        reviews = sync_page.call_args.args[1]
+        self.assertEqual([review["review_id"] for review in reviews], ["top", "middle"])
+        self.assertEqual([review["submitted_by"] for review in reviews], ["Ana", ""])
+        children = _build_place_children(reviews)
+        attributions = [
+            block["paragraph"]["rich_text"][0]["text"]["content"]
+            for block in children if block["type"] == "paragraph"
+            and block["paragraph"]["rich_text"][0]["text"]["content"].startswith("Nos la env\u00eda:")
+        ]
+        self.assertEqual(attributions, ["Nos la env\u00eda: Ana"])
+
     def test_export_requires_a_capture_for_every_accepted_review(self) -> None:
         with self.assertRaisesRegex(ValueError, "captura de todas"):
             config_ui._export_place_to_notion("place-1", {})
@@ -214,6 +337,40 @@ class PlaceWorkflowTests(unittest.TestCase):
 
 
 class NotionPlaceDocumentTests(unittest.TestCase):
+    def test_sender_is_distinguished_from_the_review_author(self) -> None:
+        children = _build_children({
+            "submitted_by": "  Ana  ", "reviewer_name": "Luis", "review_text": "Una queja divertida",
+        })
+        self.assertEqual([block["type"] for block in children], ["paragraph", "paragraph", "quote"])
+        self.assertEqual(children[0]["paragraph"]["rich_text"][0]["text"]["content"], "Nos la env\u00eda: Ana")
+        self.assertEqual(children[1]["paragraph"]["rich_text"][0]["text"]["content"], "Luis")
+        self.assertEqual(children[2]["quote"]["rich_text"][0]["text"]["content"], "Una queja divertida")
+
+    def test_reviews_without_a_sender_keep_the_existing_format(self) -> None:
+        for submitted_by in (None, "", "   "):
+            with self.subTest(submitted_by=submitted_by):
+                children = _build_children({
+                    "submitted_by": submitted_by, "reviewer_name": "Luis", "review_text": "Texto",
+                })
+                self.assertEqual([block["type"] for block in children], ["paragraph", "quote"])
+                self.assertEqual(children[0]["paragraph"]["rich_text"][0]["text"]["content"], "Luis")
+
+    def test_grouped_document_keeps_each_sender_with_the_correct_review(self) -> None:
+        children = _build_place_children([
+            {"submitted_by": "Ana", "reviewer_name": "Primera", "review_text": "Uno", "humor_score": 90},
+            {"reviewer_name": "Segunda", "review_text": "Dos", "humor_score": 80},
+            {"submitted_by": "Pedro", "reviewer_name": "Tercera", "review_text": "Tres", "humor_score": 70},
+        ])
+        sections = [[]]
+        for block in children:
+            if block["type"] == "divider":
+                sections.append([])
+            elif block["type"] == "paragraph":
+                sections[-1].append(block["paragraph"]["rich_text"][0]["text"]["content"])
+        self.assertEqual(sections, [
+            ["Nos la env\u00eda: Ana", "Primera"], ["Segunda"], ["Nos la env\u00eda: Pedro", "Tercera"],
+        ])
+
     def test_title_contains_place_location_rating_and_selected_count(self) -> None:
         title = _place_page_title(
             {

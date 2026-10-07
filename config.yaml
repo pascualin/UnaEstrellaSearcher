@@ -2,27 +2,27 @@ app:
   output_dir: out
   data_dir: data
   humor_threshold: 70
-  max_reviews_per_place: 40
-  max_places_per_run: 10
+  max_reviews_per_place: 100
+  max_places_per_run: 20
   allow_repeat_suggestions: false
   locale: es
 discovery:
   provider: serpapi_maps
-  country: CN
-  regions: []
+  country: ''
+  regions:
+  - Barcelona
   name_contains: ''
-  categories:
-  - atracción turística
-  min_total_reviews: 5000
+  categories: []
+  min_total_reviews: 100
   require_recent_days: 3650
 providers:
   serpapi:
     api_key_env: SERPAPI_API_KEY
     hl: es
-    gl: cn
+    gl: es
 scoring:
   provider: openai
-  model: gpt-5.2
+  model: gpt-6-sol
   api_key_env: OPENAI_API_KEY
   temperature: 0.2
   max_output_tokens: 320
@@ -89,6 +89,10 @@ scoring:
     \ “<resumen corto de 1-2 frases que conserve el humor>”\n}\n\nSi no hay nada gracioso,\
     \ asigna una puntuación baja (0–20).\n\nInput\n\nESTRELLAS:\n{rating}\n\nRESEÑA:\n\
     {review_text}\n\nRESPUESTA DEL PROPIETARIO:\n{owner_reply}"
+  reasoning_effort: low
+  reasoning_mode: standard
+  verbosity: low
+  service_tier: auto
 safety:
   pii_patterns: []
   sensitive_keywords: []

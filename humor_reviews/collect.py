@@ -145,6 +145,8 @@ def collect_reviews(
     providers: ProviderSettings,
     max_reviews_per_place: int,
     cache_dir: Path,
+    *,
+    raise_on_error: bool = False,
 ) -> Iterable[RawReview]:
     api_key = os.getenv(providers.serpapi_api_key_env)
     if not api_key:
@@ -170,6 +172,8 @@ def collect_reviews(
                     "review_fetch_failed",
                     {"data_id": data_id, "error": str(exc)},
                 )
+                if raise_on_error:
+                    raise
                 break
 
             place_url = payload.get("place_info", {}).get("link", "") or payload.get("search_metadata", {}).get("google_maps_url", "")
